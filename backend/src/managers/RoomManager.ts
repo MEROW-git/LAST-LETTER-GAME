@@ -253,6 +253,10 @@ export class RoomManager {
       throw new Error('Room not found');
     }
 
+    if (room.status !== 'waiting') {
+      throw new Error('Cannot change ready status during a game');
+    }
+
     const player = room.players.find(p => p.id === playerId);
     if (!player) {
       throw new Error('Player not found in room');
@@ -442,6 +446,37 @@ export class RoomManager {
         room.gameEndedAt = Date.now();
       }
     }
+  }
+
+  /**
+   * Reset a finished room back to waiting state for another round
+   */
+  resetRoomForNextGame(roomId: string): Room | null {
+    const room = this.rooms.get(roomId);
+    if (!room) {
+      return null;
+    }
+
+    room.status = 'waiting';
+    room.currentTurnIndex = 0;
+    room.currentWord = null;
+    room.requiredLetter = null;
+    room.usedWords = [];
+    room.leaderboard = null;
+    room.gameStartedAt = null;
+    room.gameEndedAt = null;
+
+    room.players.forEach((player) => {
+      player.isReady = false;
+      player.isEliminated = false;
+      player.stats = {
+        validWordsSubmitted: 0,
+        timeoutCount: 0,
+        longestWord: '',
+      };
+    });
+
+    return room;
   }
 
   /**

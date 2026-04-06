@@ -15,6 +15,7 @@ import type {
   GameState,
   MatchResult 
 } from '@shared/types';
+import { getPlayerProfile } from '@/utils/localStorage';
 
 type AppSocket = Socket<ServerToClientEvents, ClientToServerEvents>;
 type RoomResponseCallback = (response: { success: boolean; room?: Room; error?: string }) => void;
@@ -102,7 +103,7 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
 
     newSocket.on('player_kicked', (playerId) => {
       console.log('[Socket] Player kicked:', playerId);
-      if (currentRoom && playerId === newSocket.id) {
+      if (playerId === getPlayerProfile()?.id) {
         setCurrentRoom(null);
         setError('You were kicked from the room');
       }
@@ -181,7 +182,7 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
       setError(err.message);
       setTimeout(() => setError(null), 5000);
     });
-  }, [currentRoom]);
+  }, []);
 
   // Disconnect socket
   const disconnect = useCallback(() => {
@@ -227,7 +228,21 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const leaveRoom = useCallback((callback?: SuccessCallback) => {
-    if (!socketRef.current || !currentRoom) return;
+    if (!currentRoom) {
+      setCurrentRoom(null);
+      setGameState(null);
+      setLeaderboard(null);
+      callback?.({ success: true });
+      return;
+    }
+
+    if (!socketRef.current) {
+      setCurrentRoom(null);
+      setGameState(null);
+      setLeaderboard(null);
+      callback?.({ success: false });
+      return;
+    }
     
     socketRef.current.emit('leave_room', { roomId: currentRoom.id }, (response) => {
       setCurrentRoom(null);

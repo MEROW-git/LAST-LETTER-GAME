@@ -180,12 +180,15 @@ io.on('connection', (socket) => {
   socket.on('leave_room', (data, callback) => {
     try {
       const { roomId } = data;
+      const existingPlayer = roomManager.getRoom(roomId)?.players.find(p => p.socketId === socket.id);
       
-      const { room, newAdminId } = roomManager.leaveRoom(roomId, socket.id);
+      const { room, newAdminId } = roomManager.leaveRoom(roomId, existingPlayer?.id || socket.id);
       
       if (room) {
         socket.leave(roomId);
-        socket.to(roomId).emit('player_left', socket.id);
+        if (existingPlayer) {
+          socket.to(roomId).emit('player_left', existingPlayer.id);
+        }
         
         // Notify about admin transfer if applicable
         if (newAdminId) {
@@ -334,6 +337,7 @@ io.on('connection', (socket) => {
       
       // Update room status
       roomManager.setRoomStatus(roomId, 'playing');
+      io.to(roomId).emit('room_updated', room);
       
       // Broadcast game start
       io.to(roomId).emit('game_started', gameState);
@@ -444,6 +448,10 @@ io.on('connection', (socket) => {
           // Game ended due to disconnect
           io.to(room.id).emit('game_ended', room.leaderboard);
           gameManager.cleanupRoom(room.id);
+          const resetRoom = roomManager.resetRoomForNextGame(room.id);
+          if (resetRoom) {
+            io.to(room.id).emit('room_updated', resetRoom);
+          }
         } else {
           // Broadcast player elimination and turn change
           io.to(room.id).emit('player_eliminated', {
@@ -509,7 +517,10 @@ io.on('connection', (socket) => {
     if (result.gameEnded && room.leaderboard) {
       io.to(roomId).emit('game_ended', room.leaderboard);
       gameManager.cleanupRoom(roomId);
-      roomManager.setRoomStatus(roomId, 'ended');
+      const resetRoom = roomManager.resetRoomForNextGame(roomId);
+      if (resetRoom) {
+        io.to(roomId).emit('room_updated', resetRoom);
+      }
     } else {
       // Continue game with next player
       const currentPlayer = gameManager.getCurrentPlayer(room);

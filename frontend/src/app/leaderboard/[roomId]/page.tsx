@@ -10,7 +10,7 @@
  * - Navigation buttons
  */
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import { getPlayerProfile } from '@/utils/localStorage';
 import { useSocket } from '@/contexts/SocketContext';
@@ -20,7 +20,8 @@ export default function LeaderboardPage() {
   const params = useParams();
   const roomId = params.roomId as string;
   
-  const { leaderboard, currentRoom, leaveRoom } = useSocket();
+  const { leaderboard, currentRoom } = useSocket();
+  const [isLeaving, setIsLeaving] = useState(false);
 
   // Check profile
   useEffect(() => {
@@ -32,6 +33,10 @@ export default function LeaderboardPage() {
 
   // If no leaderboard, redirect to room
   useEffect(() => {
+    if (isLeaving) {
+      return;
+    }
+
     if (currentRoom?.status === 'playing') {
       router.push(`/game/${roomId}`);
       return;
@@ -39,18 +44,11 @@ export default function LeaderboardPage() {
     if (!leaderboard && currentRoom?.status !== 'ended') {
       router.push(`/room/${roomId}`);
     }
-  }, [leaderboard, currentRoom, roomId, router]);
+  }, [isLeaving, leaderboard, currentRoom, roomId, router]);
 
-  const handleBackToLobby = () => {
-    leaveRoom(() => {
-      router.push('/lobby');
-    });
-  };
-
-  const handleExitToMenu = () => {
-    leaveRoom(() => {
-      router.push('/');
-    });
+  const handleBackToRoom = () => {
+    setIsLeaving(true);
+    router.push(`/room/${roomId}`);
   };
 
   if (!leaderboard) {
@@ -155,13 +153,13 @@ export default function LeaderboardPage() {
         {/* Action Buttons */}
         <div className="flex gap-4">
           <button
-            onClick={handleBackToLobby}
+            onClick={handleBackToRoom}
             className="flex-1 btn btn-primary"
           >
-            Back to Lobby
+            Back to Room
           </button>
           <button
-            onClick={handleExitToMenu}
+            onClick={() => router.push('/')}
             className="flex-1 btn btn-secondary"
           >
             Exit to Menu

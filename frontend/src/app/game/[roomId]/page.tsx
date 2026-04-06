@@ -27,6 +27,7 @@ export default function GamePage() {
   const { 
     currentRoom, 
     gameState, 
+    leaderboard,
     submitWord, 
     leaveRoom,
     isConnected 
@@ -45,7 +46,7 @@ export default function GamePage() {
     }
 
     // If game ended, redirect to leaderboard
-    if (currentRoom?.status === 'ended' && currentRoom?.leaderboard) {
+    if (leaderboard) {
       router.push(`/leaderboard/${roomId}`);
       return;
     }
@@ -54,7 +55,17 @@ export default function GamePage() {
     if (currentRoom?.status !== 'playing' && !gameState) {
       router.push(`/room/${roomId}`);
     }
-  }, [profile, currentRoom, gameState, roomId, router]);
+  }, [profile, currentRoom, gameState, leaderboard, roomId, router]);
+
+  useEffect(() => {
+    if (!profile) {
+      return;
+    }
+
+    if (!currentRoom && !gameState) {
+      router.push('/lobby');
+    }
+  }, [profile, currentRoom, gameState, router]);
 
   // Focus input when it's player's turn
   useEffect(() => {

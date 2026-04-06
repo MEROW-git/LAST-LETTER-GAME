@@ -44,6 +44,17 @@ export default function RoomPage() {
     }
   }, [profile, router]);
 
+  useEffect(() => {
+    if (!currentRoom) {
+      router.push('/lobby');
+      return;
+    }
+
+    if (currentRoom.id !== roomId) {
+      router.push(currentRoom.status === 'playing' ? `/game/${currentRoom.id}` : `/room/${currentRoom.id}`);
+    }
+  }, [currentRoom, roomId, router]);
+
   // Sync settings with room
   useEffect(() => {
     if (currentRoom) {
