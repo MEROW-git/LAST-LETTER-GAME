@@ -2,11 +2,13 @@
  * Local Storage Utilities
  * 
  * Handles player profile persistence in browser localStorage
+ * Now includes user authentication and ranking system
  */
 
 import { v4 as uuidv4 } from 'uuid';
-import type { PlayerProfile } from '@shared/types';
+import type { PlayerProfile, Rank } from '@shared/types';
 import { LOCAL_STORAGE_KEYS } from '@shared/types';
+import { calculateRank } from '@shared/types';
 
 /**
  * Get player profile from localStorage
@@ -28,12 +30,23 @@ export function getPlayerProfile(): PlayerProfile | null {
 /**
  * Save player profile to localStorage
  */
-export function savePlayerProfile(profile: Omit<PlayerProfile, 'id'>): PlayerProfile {
+export function savePlayerProfile(profile: Omit<PlayerProfile, 'id' | 'rank' | 'rankPoints' | 'gamesPlayed' | 'gamesWon' | 'gamesLost' | 'createdAt' | 'lastLoginAt'> & { id?: string }): PlayerProfile {
   const existingProfile = getPlayerProfile();
+  const now = Date.now();
   
   const newProfile: PlayerProfile = {
-    id: existingProfile?.id || uuidv4(), // Keep existing ID if available
-    ...profile,
+    id: profile.id || existingProfile?.id || uuidv4(),
+    userId: profile.userId,
+    name: profile.name,
+    age: profile.age,
+    profileImage: profile.profileImage,
+    rank: existingProfile?.rank || 'Plastic',
+    rankPoints: existingProfile?.rankPoints || 0,
+    gamesPlayed: existingProfile?.gamesPlayed || 0,
+    gamesWon: existingProfile?.gamesWon || 0,
+    gamesLost: existingProfile?.gamesLost || 0,
+    createdAt: existingProfile?.createdAt || now,
+    lastLoginAt: now,
   };
   
   if (typeof window !== 'undefined') {
@@ -71,6 +84,32 @@ export function updatePlayerProfile(updates: Partial<PlayerProfile>): PlayerProf
 }
 
 /**
+ * Update player stats after a game
+ */
+export function updatePlayerStats(won: boolean): PlayerProfile | null {
+  const profile = getPlayerProfile();
+  if (!profile) return null;
+
+  const newGamesPlayed = profile.gamesPlayed + 1;
+  const newGamesWon = won ? profile.gamesWon + 1 : profile.gamesWon;
+  const newGamesLost = won ? profile.gamesLost : profile.gamesLost + 1;
+  
+  // Calculate new rank points
+  const pointsChange = won ? 100 : -50;
+  const newRankPoints = Math.max(0, profile.rankPoints + pointsChange); // Don't go below 0
+  const newRank = calculateRank(newRankPoints);
+
+  return updatePlayerProfile({
+    gamesPlayed: newGamesPlayed,
+    gamesWon: newGamesWon,
+    gamesLost: newGamesLost,
+    rankPoints: newRankPoints,
+    rank: newRank,
+    lastLoginAt: Date.now(),
+  });
+}
+
+/**
  * Check if player profile exists
  */
 export function hasPlayerProfile(): boolean {
@@ -95,11 +134,13 @@ export function clearPlayerProfile(): void {
  */
 export function generateRandomAvatar(seed?: string): string {
   const seeds = [
-    'felix', 'bella', 'leo', 'luna', 'max', 'lucy', 
+    'felix', 'bella', 'leo', 'luna', 'max', 'lucy',
     'charlie', 'lily', 'rocky', 'daisy'
   ];
-  const randomSeed = seed || seeds[Math.floor(Math.random() * seeds.length)];
-  return `https://api.dicebear.com/7.x/avataaars/svg?seed=${randomSeed}`;
+  const baseSeed = seed || seeds[Math.floor(Math.random() * seeds.length)];
+  const randomSuffix = Math.random().toString(36).substring(2, 8);
+  const finalSeed = `${baseSeed}-${randomSuffix}`;
+  return `https://api.dicebear.com/7.x/avataaars/svg?seed=${finalSeed}`;
 }
 
 /**

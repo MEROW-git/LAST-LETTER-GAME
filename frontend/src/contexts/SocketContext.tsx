@@ -15,7 +15,7 @@ import type {
   GameState,
   MatchResult 
 } from '@shared/types';
-import { getPlayerProfile } from '@/utils/localStorage';
+import { getPlayerProfile, updatePlayerStats } from '@/utils/localStorage';
 import { useDialog } from '@/contexts/DialogContext';
 
 type AppSocket = Socket<ServerToClientEvents, ClientToServerEvents>;
@@ -140,6 +140,15 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
       console.log('[Socket] Game ended');
       setLeaderboard(result);
       setGameState(null);
+
+      // Update player stats based on game result
+      if (result.winnerId) {
+        const playerProfile = getPlayerProfile();
+        if (playerProfile) {
+          const won = result.winnerId === playerProfile.id;
+          updatePlayerStats(won);
+        }
+      }
     });
 
     newSocket.on('turn_changed', (data) => {

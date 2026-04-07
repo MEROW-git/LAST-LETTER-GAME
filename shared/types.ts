@@ -5,11 +5,62 @@
 
 // ==================== PLAYER TYPES ====================
 
+export type Rank = 'Plastic' | 'Iron' | 'Silver' | 'Gold' | 'Diamond';
+
 export interface PlayerProfile {
   id: string;
+  userId: string; // Unique user identifier for login
   name: string;
   age: number;
   profileImage?: string;
+  rank: Rank;
+  rankPoints: number;
+  gamesPlayed: number;
+  gamesWon: number;
+  gamesLost: number;
+  createdAt: number;
+  lastLoginAt: number;
+}
+
+export interface UserCredentials {
+  userId: string;
+  password: string;
+}
+
+export interface AuthResponse {
+  success: boolean;
+  player?: PlayerProfile;
+  error?: string;
+}
+
+// ==================== RANKING SYSTEM ====================
+
+export const RANK_THRESHOLDS = {
+  Plastic: 0,
+  Iron: 500,
+  Silver: 1500,
+  Gold: 3000,
+  Diamond: 5000,
+} as const;
+
+export const RANK_POINTS = {
+  WIN: 100,
+  LOSS: -50,
+} as const;
+
+export function calculateRank(points: number): Rank {
+  if (points >= RANK_THRESHOLDS.Diamond) return 'Diamond';
+  if (points >= RANK_THRESHOLDS.Gold) return 'Gold';
+  if (points >= RANK_THRESHOLDS.Silver) return 'Silver';
+  if (points >= RANK_THRESHOLDS.Iron) return 'Iron';
+  return 'Plastic';
+}
+
+export function getNextRankThreshold(currentRank: Rank): number {
+  const ranks: Rank[] = ['Plastic', 'Iron', 'Silver', 'Gold', 'Diamond'];
+  const currentIndex = ranks.indexOf(currentRank);
+  if (currentIndex === ranks.length - 1) return RANK_THRESHOLDS.Diamond; // Max rank
+  return RANK_THRESHOLDS[ranks[currentIndex + 1]];
 }
 
 export interface Player extends PlayerProfile {

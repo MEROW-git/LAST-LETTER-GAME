@@ -13,6 +13,8 @@ import express from 'express';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
 import cors from 'cors';
+import bcrypt from 'bcrypt';
+import { v4 as uuidv4 } from 'uuid';
 
 import { env } from './config/env';
 import { roomManager } from './managers/RoomManager';
@@ -20,7 +22,11 @@ import { gameManager } from './managers/GameManager';
 import { wordValidationService } from './services/WordValidationService';
 import type { 
   ClientToServerEvents, 
-  ServerToClientEvents
+  ServerToClientEvents,
+  PlayerProfile,
+  UserCredentials,
+  AuthResponse,
+  Rank
 } from '../../shared/types';
 
 // Initialize Express app
@@ -35,6 +41,149 @@ app.use(cors({
   origin: corsOriginOption,
 }));
 app.use(express.json());
+
+// ==================== USER AUTHENTICATION STORE ====================
+
+// Simple in-memory user store (in production, use a database)
+const userStore: Map<string, { passwordHash: string; profile: PlayerProfile }> = new Map();
+
+// ==================== AUTHENTICATION API ROUTES ====================
+
+// Register new user
+app.post('/api/auth/register', async (req, res) => {
+  try {
+    const { userId, password, name, age, profileImage } = req.body;
+
+    // Validate input
+    if (!userId || !password || !name || !age) {
+      return res.status(400).json({
+        success: false,
+        error: 'userId, password, name, and age are required'
+      } as AuthResponse);
+    }
+
+    if (userId.length < 3 || userId.length > 20) {
+      return res.status(400).json({
+        success: false,
+        error: 'userId must be between 3 and 20 characters'
+      } as AuthResponse);
+    }
+
+    if (password.length < 6) {
+      return res.status(400).json({
+        success: false,
+        error: 'Password must be at least 6 characters'
+      } as AuthResponse);
+    }
+
+    if (name.length < 2 || name.length > 20) {
+      return res.status(400).json({
+        success: false,
+        error: 'Name must be between 2 and 20 characters'
+      } as AuthResponse);
+    }
+
+    if (age < 5 || age > 120) {
+      return res.status(400).json({
+        success: false,
+        error: 'Age must be between 5 and 120'
+      } as AuthResponse);
+    }
+
+    // Check if user already exists
+    if (userStore.has(userId.toLowerCase())) {
+      return res.status(409).json({
+        success: false,
+        error: 'User ID already exists'
+      } as AuthResponse);
+    }
+
+    // Hash password
+    const passwordHash = await bcrypt.hash(password, 10);
+
+    // Create player profile
+    const now = Date.now();
+    const profile: PlayerProfile = {
+      id: uuidv4(),
+      userId: userId.toLowerCase(),
+      name: name.trim(),
+      age: parseInt(age),
+      profileImage,
+      rank: 'Plastic' as Rank,
+      rankPoints: 0,
+      gamesPlayed: 0,
+      gamesWon: 0,
+      gamesLost: 0,
+      createdAt: now,
+      lastLoginAt: now,
+    };
+
+    // Store user
+    userStore.set(userId.toLowerCase(), { passwordHash, profile });
+
+    console.log(`[AUTH] User registered: ${userId}`);
+
+    res.json({
+      success: true,
+      player: profile
+    } as AuthResponse);
+
+  } catch (error) {
+    console.error('[AUTH] Registration error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Registration failed'
+    } as AuthResponse);
+  }
+});
+
+// Login user
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { userId, password } = req.body;
+
+    if (!userId || !password) {
+      return res.status(400).json({
+        success: false,
+        error: 'userId and password are required'
+      } as AuthResponse);
+    }
+
+    const userData = userStore.get(userId.toLowerCase());
+    if (!userData) {
+      return res.status(401).json({
+        success: false,
+        error: 'Invalid user ID or password'
+      } as AuthResponse);
+    }
+
+    // Verify password
+    const isValidPassword = await bcrypt.compare(password, userData.passwordHash);
+    if (!isValidPassword) {
+      return res.status(401).json({
+        success: false,
+        error: 'Invalid user ID or password'
+      } as AuthResponse);
+    }
+
+    // Update last login
+    userData.profile.lastLoginAt = Date.now();
+
+    console.log(`[AUTH] User logged in: ${userId}`);
+
+    res.json({
+      success: true,
+      player: userData.profile
+    } as AuthResponse);
+
+  } catch (error) {
+    console.error('[AUTH] Login error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Login failed'
+    } as AuthResponse);
+  }
+});
 
 // ==================== REST API ROUTES ====================
 

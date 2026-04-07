@@ -33,10 +33,8 @@ export default function MainMenu() {
   }, [router]);
 
   const handleExit = () => {
-    if (confirm('Are you sure you want to exit? Your profile will be cleared.')) {
+    if (confirm('Are you sure you want to log out?')) {
       clearPlayerProfile();
-      window.close();
-      // Fallback if window.close() doesn't work
       router.push('/setup');
     }
   };
@@ -54,7 +52,7 @@ export default function MainMenu() {
       <div className="w-full max-w-md animate-fade-in">
         {/* Player Profile Card */}
         <div className="card mb-6">
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-4 mb-4">
             <div className="w-16 h-16 rounded-full bg-slate-700 flex items-center justify-center overflow-hidden border-2 border-primary-500">
               {profile.profileImage ? (
                 <img 
@@ -69,13 +67,44 @@ export default function MainMenu() {
             <div>
               <h2 className="text-xl font-bold text-white">{profile.name}</h2>
               <p className="text-slate-400">Age: {profile.age}</p>
+              <p className="text-slate-400">User ID: {profile.userId}</p>
+            </div>
+          </div>
+
+          {/* Rank and Stats */}
+          <div className="border-t border-slate-700 pt-4">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-sm text-slate-400">Rank:</span>
+              <span className={`font-bold ${
+                profile.rank === 'Diamond' ? 'text-cyan-400' :
+                profile.rank === 'Gold' ? 'text-yellow-400' :
+                profile.rank === 'Silver' ? 'text-slate-300' :
+                profile.rank === 'Iron' ? 'text-orange-400' :
+                'text-slate-500'
+              }`}>
+                {profile.rank}
+              </span>
+            </div>
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-sm text-slate-400">Points:</span>
+              <span className="font-bold text-white">{profile.rankPoints}</span>
+            </div>
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-sm text-slate-400">Games Played:</span>
+              <span className="font-bold text-white">{profile.gamesPlayed}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-slate-400">Win Rate:</span>
+              <span className="font-bold text-white">
+                {profile.gamesPlayed > 0 ? Math.round((profile.gamesWon / profile.gamesPlayed) * 100) : 0}%
+              </span>
             </div>
           </div>
         </div>
 
         {/* Game Title */}
         <div className="text-center mb-8">
-          <h1 className="text-5xl font-bold gradient-text mb-2">Last Letter</h1>
+          <h1 className="text-5xl font-bold text-white neon-text mb-2">Last Letter</h1>
           <p className="text-slate-400">Multiplayer Word Chain Game</p>
         </div>
 
@@ -102,7 +131,7 @@ export default function MainMenu() {
               <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
               </svg>
-              Edit Profile
+              Switch Account
             </span>
           </button>
 
@@ -140,9 +169,9 @@ export default function MainMenu() {
       {/* How to Play Modal */}
       {showHowToPlay && (
         <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fade-in">
-          <div className="card max-w-lg w-full max-h-[90vh] overflow-y-auto">
+          <div className="card max-w-6xl w-full max-h-[85vh] overflow-hidden">
             <div className="flex justify-between items-center mb-6">
-              <h2 className="text-2xl font-bold text-white">How to Play</h2>
+              <h2 className="text-2xl font-bold text-white">How to Play 🎮</h2>
               <button
                 onClick={() => setShowHowToPlay(false)}
                 className="text-slate-400 hover:text-white transition-colors"
@@ -153,53 +182,57 @@ export default function MainMenu() {
               </button>
             </div>
 
-            <div className="space-y-6 text-slate-300">
-              <section>
-                <h3 className="text-lg font-semibold text-primary-400 mb-2">🎯 Objective</h3>
-                <p>Be the last player standing by entering valid English words in a chain!</p>
-              </section>
+            <div className="grid gap-8 lg:grid-cols-2 text-slate-300 max-h-[72vh] overflow-hidden">
+              <div className="space-y-6 overflow-y-auto pr-2">
+                <section className="border border-slate-700 rounded-2xl p-4 bg-slate-900/60">
+                  <h3 className="text-lg font-semibold text-primary-400 mb-2">🎯 Objective</h3>
+                  <p>Be the last player standing by entering valid English words in a chain!</p>
+                </section>
 
-              <section>
-                <h3 className="text-lg font-semibold text-primary-400 mb-2">📝 Rules</h3>
-                <ol className="list-decimal list-inside space-y-2">
-                  <li>The first player can enter any valid English word</li>
-                  <li>The next player must enter a word that starts with the <strong>last letter</strong> of the previous word</li>
-                  <li>Words cannot be reused in the same match</li>
-                  <li>You have a limited time to enter your word (5-30 seconds)</li>
-                  <li>If you fail to enter a valid word in time, you are eliminated</li>
-                  <li>The last remaining player wins!</li>
-                </ol>
-              </section>
+                <section className="border border-slate-700 rounded-2xl p-4 bg-slate-900/60">
+                  <h3 className="text-lg font-semibold text-primary-400 mb-2">📝 Rules</h3>
+                  <ol className="list-decimal list-inside space-y-2">
+                    <li>The first player can enter any valid English word</li>
+                    <li>The next player must enter a word that starts with the <strong>last letter</strong> of the previous word</li>
+                    <li>Words cannot be reused in the same match</li>
+                    <li>You have a limited time to enter your word (5-30 seconds)</li>
+                    <li>If you fail to enter a valid word in time, you are eliminated</li>
+                    <li>The last remaining player wins!</li>
+                  </ol>
+                </section>
+              </div>
 
-              <section>
-                <h3 className="text-lg font-semibold text-primary-400 mb-2">💡 Example</h3>
-                <div className="bg-slate-800 rounded-lg p-4">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="px-3 py-1 bg-primary-600 rounded-full text-white font-mono">DOG</span>
-                    <span className="text-slate-500">→</span>
-                    <span className="px-3 py-1 bg-accent-600 rounded-full text-white font-mono">GONE</span>
-                    <span className="text-slate-500">→</span>
-                    <span className="px-3 py-1 bg-success-600 rounded-full text-white font-mono">EGG</span>
-                    <span className="text-slate-500">→</span>
-                    <span className="px-3 py-1 bg-warning-600 rounded-full text-white font-mono">GOAT</span>
+              <div className="space-y-6 overflow-y-auto pl-2">
+                <section className="border border-slate-700 rounded-2xl p-4 bg-slate-900/60">
+                  <h3 className="text-lg font-semibold text-primary-400 mb-2">💡 Example</h3>
+                  <div className="bg-slate-800 rounded-lg p-4">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="px-3 py-1 bg-primary-600 rounded-full text-white font-mono neon-badge neon-primary">DOG</span>
+                      <span className="text-slate-500">→</span>
+                      <span className="px-3 py-1 bg-accent-600 rounded-full text-white font-mono neon-badge neon-accent">GONE</span>
+                      <span className="text-slate-500">→</span>
+                      <span className="px-3 py-1 bg-success-600 rounded-full text-white font-mono neon-badge neon-success">EGG</span>
+                      <span className="text-slate-500">→</span>
+                      <span className="px-3 py-1 bg-warning-600 rounded-full text-white font-mono neon-badge neon-warning">GOAT</span>
+                    </div>
                   </div>
-                </div>
-              </section>
+                </section>
 
-              <section>
-                <h3 className="text-lg font-semibold text-primary-400 mb-2">⚠️ Validations</h3>
-                <ul className="list-disc list-inside space-y-1">
-                  <li>Words must be real English words</li>
-                  <li>Words must start with the required letter</li>
-                  <li>Words must be at least 2 letters long</li>
-                  <li>Words can only contain letters (no numbers or symbols)</li>
-                </ul>
-              </section>
+                <section className="border border-slate-700 rounded-2xl p-4 bg-slate-900/60">
+                  <h3 className="text-lg font-semibold text-primary-400 mb-2">⚠️ Validations</h3>
+                  <ul className="list-disc list-inside space-y-1">
+                    <li>Words must be real English words</li>
+                    <li>Words must start with the required letter</li>
+                    <li>Words must be at least 2 letters long</li>
+                    <li>Words can only contain letters (no numbers or symbols)</li>
+                  </ul>
+                </section>
 
-              <section>
-                <h3 className="text-lg font-semibold text-primary-400 mb-2">👥 Multiplayer</h3>
-                <p>Play with 2-15 players in real-time. Create a room or join an existing one with a room code!</p>
-              </section>
+                <section className="border border-slate-700 rounded-2xl p-4 bg-slate-900/60">
+                  <h3 className="text-lg font-semibold text-primary-400 mb-2">👥 Multiplayer</h3>
+                  <p>Play with 2-15 players in real-time. Create a room or join an existing one with a room code!</p>
+                </section>
+              </div>
             </div>
 
             <button
