@@ -11,11 +11,15 @@
  */
 
 import type { 
+  AIDifficulty,
+  AbilityEffectPayload,
+  AbilityType,
   Room, 
   GameState, 
   MatchResult, 
   PlayerRanking,
-  Player 
+  Player,
+  PlayerAbilityState
 } from '../../../shared/types';
 import { wordValidationService } from '../services/WordValidationService';
 import { roomManager } from './RoomManager';
@@ -26,9 +30,86 @@ interface TimerCallback {
   onExpire: () => void;
 }
 
+type AITurnPlan = {
+  player: Player;
+  delayMs: number;
+  word: string | null;
+  shouldMistake: boolean;
+};
+
+const AI_BEHAVIOR: Record<AIDifficulty, { delayRangeMs: [number, number]; mistakeChance: number }> = {
+  easy: { delayRangeMs: [2200, 4200], mistakeChance: 0.22 },
+  medium: { delayRangeMs: [1400, 2600], mistakeChance: 0.08 },
+  hard: { delayRangeMs: [900, 1700], mistakeChance: 0.02 },
+};
+
 export class GameManager {
   private activeTimers: Map<string, NodeJS.Timeout> = new Map(); // roomId -> interval
   private timeRemaining: Map<string, number> = new Map(); // roomId -> seconds
+  private timerCallbacks: Map<string, TimerCallback | undefined> = new Map();
+  private pausedUntil: Map<string, number> = new Map();
+  private playerAbilities: Map<string, Map<string, PlayerAbilityState>> = new Map();
+  private blockedPlayers: Map<string, Set<string>> = new Map();
+  private skipPlayers: Map<string, Set<string>> = new Map();
+  private reverseChainPlayers: Map<string, Set<string>> = new Map();
+
+  private createDefaultAbilityState(): PlayerAbilityState {
+    return {
+      time_freeze: 1,
+      letter_change: 1,
+      hint_boost: 1,
+      block_opponent: 1,
+      reverse_chain: 1,
+      skip_turn_attack: 1,
+      isBlocked: false,
+      reverseChainArmed: false,
+    };
+  }
+
+  private getAbilityMap(roomId: string): Map<string, PlayerAbilityState> {
+    let roomMap = this.playerAbilities.get(roomId);
+    if (!roomMap) {
+      roomMap = new Map();
+      this.playerAbilities.set(roomId, roomMap);
+    }
+    return roomMap;
+  }
+
+  private getPlayerAbilityState(roomId: string, playerId: string): PlayerAbilityState {
+    const roomMap = this.getAbilityMap(roomId);
+    let state = roomMap.get(playerId);
+    if (!state) {
+      state = this.createDefaultAbilityState();
+      roomMap.set(playerId, state);
+    }
+    return state;
+  }
+
+  private syncPlayerAbilityFlags(roomId: string, playerId: string) {
+    const state = this.getPlayerAbilityState(roomId, playerId);
+    state.isBlocked = this.blockedPlayers.get(roomId)?.has(playerId) ?? false;
+    state.reverseChainArmed = this.reverseChainPlayers.get(roomId)?.has(playerId) ?? false;
+  }
+
+  getAbilityState(roomId: string, playerId: string): PlayerAbilityState {
+    this.syncPlayerAbilityFlags(roomId, playerId);
+    return { ...this.getPlayerAbilityState(roomId, playerId) };
+  }
+
+  private clearTurnFlags(roomId: string, playerId: string) {
+    this.blockedPlayers.get(roomId)?.delete(playerId);
+    this.reverseChainPlayers.get(roomId)?.delete(playerId);
+    this.syncPlayerAbilityFlags(roomId, playerId);
+  }
+
+  private ensureSet(map: Map<string, Set<string>>, roomId: string): Set<string> {
+    let roomSet = map.get(roomId);
+    if (!roomSet) {
+      roomSet = new Set();
+      map.set(roomId, roomSet);
+    }
+    return roomSet;
+  }
 
   /**
    * Start a new game
@@ -74,7 +155,11 @@ export class GameManager {
         timeoutCount: 0,
         longestWord: ''
       };
+      this.getAbilityMap(roomId).set(player.id, this.createDefaultAbilityState());
     });
+    this.blockedPlayers.set(roomId, new Set());
+    this.skipPlayers.set(roomId, new Set());
+    this.reverseChainPlayers.set(roomId, new Set());
 
     // Shuffle player order for variety
     room.players.sort(() => Math.random() - 0.5);
@@ -84,9 +169,6 @@ export class GameManager {
     room.currentTurnIndex = 0;
 
     console.log(`[GameManager] Game started in room ${room.roomCode}`);
-
-    // Start the timer
-    this.startTimer(roomId, room.settings.timeLimit);
 
     return this.getGameState(room);
   }
@@ -121,6 +203,7 @@ export class GameManager {
     }
 
     // Validate the word
+    const reverseChainActive = this.reverseChainPlayers.get(roomId)?.has(playerId) ?? false;
     const validationResult = await wordValidationService.validateWord(
       word,
       room.requiredLetter,
@@ -135,11 +218,13 @@ export class GameManager {
     }
 
     const normalizedWord = word.toLowerCase().trim();
-    const lastLetter = normalizedWord.charAt(normalizedWord.length - 1).toUpperCase();
+    const nextRequiredLetter = reverseChainActive
+      ? normalizedWord.charAt(0).toUpperCase()
+      : normalizedWord.charAt(normalizedWord.length - 1).toUpperCase();
 
     // Update game state
     room.currentWord = normalizedWord;
-    room.requiredLetter = lastLetter;
+    room.requiredLetter = nextRequiredLetter;
     room.usedWords.push(normalizedWord);
 
     // Update player stats
@@ -149,9 +234,10 @@ export class GameManager {
     }
 
     console.log(`[GameManager] Player ${currentPlayer.name} submitted word: ${normalizedWord}`);
+    this.clearTurnFlags(roomId, currentPlayer.id);
 
     // Move to next player
-    this.moveToNextPlayer(room);
+    this.moveToNextPlayer(roomId, room);
 
     // Reset timer
     this.resetTimer(roomId, room.settings.timeLimit);
@@ -203,7 +289,8 @@ export class GameManager {
     }
 
     // Move to next player
-    this.moveToNextPlayer(room);
+    this.clearTurnFlags(roomId, currentPlayer.id);
+    this.moveToNextPlayer(roomId, room);
 
     // Reset timer
     this.resetTimer(roomId, room.settings.timeLimit);
@@ -255,7 +342,8 @@ export class GameManager {
     // If disconnected player was current player, move to next
     const currentPlayer = this.getCurrentPlayer(room);
     if (currentPlayer && currentPlayer.id === playerId) {
-      this.moveToNextPlayer(room);
+      this.clearTurnFlags(roomId, playerId);
+      this.moveToNextPlayer(roomId, room);
       this.resetTimer(roomId, room.settings.timeLimit);
     }
 
@@ -265,7 +353,7 @@ export class GameManager {
   /**
    * Move to next active player
    */
-  private moveToNextPlayer(room: Room): void {
+  private moveToNextPlayer(roomId: string, room: Room): void {
     const playerCount = room.players.length;
     let attempts = 0;
     
@@ -276,6 +364,14 @@ export class GameManager {
       attempts < playerCount && 
       room.players[room.currentTurnIndex].isEliminated
     );
+
+    const skipSet = this.skipPlayers.get(roomId);
+    if (skipSet && skipSet.has(room.players[room.currentTurnIndex].id)) {
+      skipSet.delete(room.players[room.currentTurnIndex].id);
+      this.clearTurnFlags(roomId, room.players[room.currentTurnIndex].id);
+      this.moveToNextPlayer(roomId, room);
+      return;
+    }
 
     // If first word hasn't been played yet, set required letter to null
     if (room.usedWords.length === 0) {
@@ -310,6 +406,35 @@ export class GameManager {
     return room.players.filter(p => !p.isEliminated);
   }
 
+  isAiPlayer(player: Player | null | undefined): player is Player {
+    return Boolean(player?.isBot);
+  }
+
+  getAiTurnPlan(roomId: string): AITurnPlan | null {
+    const room = roomManager.getRoom(roomId);
+    if (!room || room.status !== 'playing' || room.gameMode !== 'single_player') {
+      return null;
+    }
+
+    const currentPlayer = this.getCurrentPlayer(room);
+    if (!this.isAiPlayer(currentPlayer)) {
+      return null;
+    }
+
+    const difficulty = room.aiDifficulty ?? 'easy';
+    const behavior = AI_BEHAVIOR[difficulty];
+    const delayMs = behavior.delayRangeMs[0] + Math.floor(Math.random() * (behavior.delayRangeMs[1] - behavior.delayRangeMs[0] + 1));
+    const shouldMistake = Math.random() < behavior.mistakeChance;
+    const word = wordValidationService.getAiMove(room.requiredLetter, room.usedWords, difficulty);
+
+    return {
+      player: currentPlayer,
+      delayMs,
+      word,
+      shouldMistake,
+    };
+  }
+
   /**
    * Get game state for client
    */
@@ -324,6 +449,7 @@ export class GameManager {
       currentPlayerName: currentPlayer?.name || null,
       timeRemaining: this.timeRemaining.get(room.id) || room.settings.timeLimit,
       totalTime: room.settings.timeLimit,
+      chainDirection: currentPlayer && (this.reverseChainPlayers.get(room.id)?.has(currentPlayer.id) ?? false) ? 'first' : 'last',
       usedWords: room.usedWords,
       players: room.players,
       status: room.status
@@ -337,10 +463,16 @@ export class GameManager {
     // Stop any existing timer
     this.stopTimer(roomId);
 
+    this.timerCallbacks.set(roomId, callbacks);
     let remaining = duration;
     this.timeRemaining.set(roomId, remaining);
 
     const interval = setInterval(() => {
+      const pausedUntil = this.pausedUntil.get(roomId);
+      if (pausedUntil && pausedUntil > Date.now()) {
+        return;
+      }
+
       remaining--;
       this.timeRemaining.set(roomId, remaining);
 
@@ -366,7 +498,7 @@ export class GameManager {
     const room = roomManager.getRoom(roomId);
     if (!room) return;
 
-    this.startTimer(roomId, duration);
+    this.startTimer(roomId, duration, this.timerCallbacks.get(roomId));
   }
 
   /**
@@ -379,6 +511,8 @@ export class GameManager {
       this.activeTimers.delete(roomId);
     }
     this.timeRemaining.delete(roomId);
+    this.timerCallbacks.delete(roomId);
+    this.pausedUntil.delete(roomId);
   }
 
   /**
@@ -386,6 +520,119 @@ export class GameManager {
    */
   getRemainingTime(roomId: string): number {
     return this.timeRemaining.get(roomId) || 0;
+  }
+
+  pauseTimer(roomId: string, durationSeconds: number): void {
+    this.pausedUntil.set(roomId, Date.now() + durationSeconds * 1000);
+  }
+
+  useAbility(roomId: string, playerId: string, ability: AbilityType, targetPlayerId?: string): {
+    success: boolean;
+    error?: string;
+    effect?: AbilityEffectPayload;
+    hints?: string[];
+    gameState?: GameState;
+  } {
+    const room = roomManager.getRoom(roomId);
+    if (!room || room.status !== 'playing') {
+      return { success: false, error: 'Game is not in progress' };
+    }
+
+    const currentPlayer = this.getCurrentPlayer(room);
+    if (!currentPlayer || currentPlayer.id !== playerId) {
+      return { success: false, error: 'You can only use abilities on your turn' };
+    }
+
+    const playerState = this.getPlayerAbilityState(roomId, playerId);
+    this.syncPlayerAbilityFlags(roomId, playerId);
+
+    if (playerState.isBlocked) {
+      return { success: false, error: 'You are blocked and cannot use abilities this turn' };
+    }
+
+    if (playerState[ability] <= 0) {
+      return { success: false, error: 'This ability has already been used' };
+    }
+
+    const makeEffect = (partial: Omit<AbilityEffectPayload, 'ability' | 'actorPlayerId' | 'actorPlayerName'>): AbilityEffectPayload => ({
+      ability,
+      actorPlayerId: currentPlayer.id,
+      actorPlayerName: currentPlayer.name,
+      ...partial,
+    });
+
+    if ((ability === 'block_opponent' || ability === 'skip_turn_attack') && !targetPlayerId) {
+      return { success: false, error: 'Select a target player' };
+    }
+
+    const targetPlayer = targetPlayerId ? room.players.find((player) => player.id === targetPlayerId && !player.isEliminated) : undefined;
+    if ((ability === 'block_opponent' || ability === 'skip_turn_attack') && (!targetPlayer || targetPlayer.id === currentPlayer.id)) {
+      return { success: false, error: 'Choose another active player' };
+    }
+
+    playerState[ability] -= 1;
+
+    switch (ability) {
+      case 'time_freeze': {
+        this.pauseTimer(roomId, 4);
+        return {
+          success: true,
+          effect: makeEffect({ durationSeconds: 4 }),
+          gameState: this.getGameState(room),
+        };
+      }
+      case 'letter_change': {
+        const letters = 'AEIOULNRST';
+        const currentLetter = room.requiredLetter;
+        const replacement = letters.split('').find((letter) => letter !== currentLetter) || 'A';
+        room.requiredLetter = replacement;
+        return {
+          success: true,
+          effect: makeEffect({ newRequiredLetter: replacement }),
+          gameState: this.getGameState(room),
+        };
+      }
+      case 'hint_boost': {
+        const hints = wordValidationService.getHints(room.requiredLetter, room.usedWords, 2);
+        return {
+          success: true,
+          effect: makeEffect({}),
+          hints,
+          gameState: this.getGameState(room),
+        };
+      }
+      case 'block_opponent': {
+        const blockedSet = this.ensureSet(this.blockedPlayers, roomId);
+        blockedSet.add(targetPlayer!.id);
+        this.syncPlayerAbilityFlags(roomId, targetPlayer!.id);
+        return {
+          success: true,
+          effect: makeEffect({ targetPlayerId: targetPlayer!.id, targetPlayerName: targetPlayer!.name }),
+          gameState: this.getGameState(room),
+        };
+      }
+      case 'reverse_chain': {
+        const reverseSet = this.ensureSet(this.reverseChainPlayers, roomId);
+        reverseSet.add(currentPlayer.id);
+        this.syncPlayerAbilityFlags(roomId, currentPlayer.id);
+        return {
+          success: true,
+          effect: makeEffect({ chainDirection: 'first' }),
+          gameState: this.getGameState(room),
+        };
+      }
+      case 'skip_turn_attack': {
+        const skipSet = this.ensureSet(this.skipPlayers, roomId);
+        skipSet.add(targetPlayer!.id);
+        return {
+          success: true,
+          effect: makeEffect({ targetPlayerId: targetPlayer!.id, targetPlayerName: targetPlayer!.name }),
+          gameState: this.getGameState(room),
+        };
+      }
+      default:
+        return { success: false, error: 'Unknown ability' };
+    }
   }
 
   /**
@@ -407,6 +654,7 @@ export class GameManager {
         playerId: winner.id,
         playerName: winner.name,
         placement: 'Winner',
+        playerRankPointsBefore: winner.rankPoints,
         validWordsSubmitted: winner.stats.validWordsSubmitted,
         timeoutCount: winner.stats.timeoutCount,
         longestWord: winner.stats.longestWord
@@ -426,6 +674,7 @@ export class GameManager {
         playerId: player.id,
         playerName: player.name,
         placement: rank === 2 ? '2nd Place' : rank === 3 ? '3rd Place' : `${rank}th Place`,
+        playerRankPointsBefore: player.rankPoints,
         validWordsSubmitted: player.stats.validWordsSubmitted,
         timeoutCount: player.stats.timeoutCount,
         longestWord: player.stats.longestWord
@@ -487,6 +736,10 @@ export class GameManager {
    */
   cleanupRoom(roomId: string): void {
     this.stopTimer(roomId);
+    this.playerAbilities.delete(roomId);
+    this.blockedPlayers.delete(roomId);
+    this.skipPlayers.delete(roomId);
+    this.reverseChainPlayers.delete(roomId);
   }
 
   /**

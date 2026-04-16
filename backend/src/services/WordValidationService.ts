@@ -10,6 +10,7 @@
  */
 
 import https from 'https';
+import type { AIDifficulty } from '../../../shared/types';
 
 export interface ValidationResult {
   valid: boolean;
@@ -61,9 +62,26 @@ export class WordValidationService {
     'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'
   ]);
 
+  private readonly aiLexicon: Set<string> = new Set([
+    'apple', 'arrow', 'artist', 'anchor', 'animal', 'answer', 'badge', 'baker', 'beach', 'berry',
+    'blade', 'bloom', 'bridge', 'button', 'cable', 'candle', 'captain', 'carpet', 'castle', 'circle',
+    'cloud', 'copper', 'corner', 'crystal', 'dancer', 'desert', 'doctor', 'dragon', 'dream', 'eagle',
+    'earth', 'engine', 'fabric', 'feather', 'forest', 'future', 'garden', 'globe', 'gold', 'grace',
+    'hammer', 'harbor', 'hazel', 'hero', 'ice', 'image', 'island', 'jacket', 'jungle', 'kernel',
+    'kitten', 'ladder', 'lantern', 'laser', 'legend', 'lemon', 'lesson', 'magic', 'marble', 'market',
+    'memory', 'metal', 'mirror', 'needle', 'nectar', 'nickel', 'oasis', 'ocean', 'olive', 'orbit',
+    'paddle', 'palace', 'paper', 'pearl', 'pepper', 'planet', 'pocket', 'polish', 'puzzle', 'quartz',
+    'queen', 'quest', 'quiet', 'radar', 'random', 'raven', 'river', 'rocket', 'saddle', 'sailor',
+    'scarlet', 'shadow', 'signal', 'silver', 'socket', 'spirit', 'spring', 'stone', 'sunset', 'tablet',
+    'talent', 'temple', 'thunder', 'ticket', 'tunnel', 'umber', 'unicorn', 'valley', 'velvet', 'victory',
+    'violet', 'vision', 'wander', 'whisper', 'window', 'winter', 'wizard', 'xenon', 'xylophone', 'yonder',
+    'yellow', 'yogurt', 'zephyr', 'zebra', 'zinc'
+  ]);
+
   constructor() {
     // Pre-load common words into validated cache
     this.commonWords.forEach(word => this.validatedWords.add(word.toLowerCase()));
+    this.aiLexicon.forEach(word => this.validatedWords.add(word.toLowerCase()));
     console.log(`[WordValidation] Pre-loaded ${this.commonWords.size} common words`);
   }
 
@@ -266,6 +284,54 @@ export class WordValidationService {
    */
   addToCache(word: string): void {
     this.validatedWords.add(word.toLowerCase().trim());
+  }
+
+  getAiMove(requiredLetter: string | null, usedWords: string[], difficulty: AIDifficulty): string | null {
+    const normalizedRequiredLetter = requiredLetter?.toLowerCase() || null;
+    const normalizedUsedWords = new Set(usedWords.map((word) => word.toLowerCase()));
+    const candidates = Array.from(this.validatedWords)
+      .filter((word) => {
+        if (normalizedRequiredLetter && !word.startsWith(normalizedRequiredLetter)) {
+          return false;
+        }
+
+        return !normalizedUsedWords.has(word);
+      })
+      .sort((left, right) => left.length - right.length || left.localeCompare(right));
+
+    if (candidates.length === 0) {
+      return null;
+    }
+
+    if (difficulty === 'easy') {
+      const simpleWords = candidates.filter((word) => word.length <= 5);
+      const pool = simpleWords.length > 0 ? simpleWords : candidates.slice(0, Math.min(12, candidates.length));
+      return pool[Math.floor(Math.random() * pool.length)] ?? null;
+    }
+
+    if (difficulty === 'medium') {
+      const mediumPool = candidates.filter((word) => word.length >= 4 && word.length <= 7);
+      const pool = mediumPool.length > 0 ? mediumPool : candidates.slice(0, Math.min(20, candidates.length));
+      return pool[Math.floor(Math.random() * pool.length)] ?? null;
+    }
+
+    const strongPool = [...candidates].sort((left, right) => right.length - left.length || left.localeCompare(right));
+    return strongPool[0] ?? null;
+  }
+
+  getHints(requiredLetter: string | null, usedWords: string[], limit = 2): string[] {
+    const normalizedRequiredLetter = requiredLetter?.toLowerCase() || null;
+    const normalizedUsedWords = new Set(usedWords.map((word) => word.toLowerCase()));
+
+    return Array.from(this.validatedWords)
+      .filter((word) => {
+        if (normalizedRequiredLetter && !word.startsWith(normalizedRequiredLetter)) {
+          return false;
+        }
+
+        return !normalizedUsedWords.has(word);
+      })
+      .slice(0, limit);
   }
 }
 

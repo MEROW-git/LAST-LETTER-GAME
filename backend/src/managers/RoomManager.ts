@@ -11,11 +11,16 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import type { 
+  AIDifficulty,
+  CreateRoomRequest,
+  GameMode,
+  JoinRoomRequest,
   Room, 
   RoomSummary, 
   Player, 
   PlayerProfile, 
   RoomSettings,
+  UpdateRoomAccessRequest,
   PlayerStats 
 } from '../../../shared/types';
 
@@ -29,8 +34,29 @@ function generateRoomCode(): string {
   return code;
 }
 
+function generateInviteToken(): string {
+  return uuidv4().replace(/-/g, '');
+}
+
+function getBotName(difficulty: AIDifficulty, index: number): string {
+  const namesByDifficulty: Record<AIDifficulty, string[]> = {
+    easy: ['Echo Bot', 'Pebble Bot', 'Sunny Bot', 'Milo Bot', 'Breeze Bot'],
+    medium: ['Nova Bot', 'Comet Bot', 'Pulse Bot', 'Rift Bot', 'Atlas Bot'],
+    hard: ['Vortex Bot', 'Cipher Bot', 'Phantom Bot', 'Titan Bot', 'Blitz Bot'],
+  };
+
+  const names = namesByDifficulty[difficulty];
+  const baseName = names[index % names.length];
+  const cycle = Math.floor(index / names.length);
+  return cycle > 0 ? `${baseName} ${cycle + 1}` : baseName;
+}
+
+type StoredRoom = Room & {
+  password?: string;
+};
+
 export class RoomManager {
-  private rooms: Map<string, Room> = new Map(); // roomId -> Room
+  private rooms: Map<string, StoredRoom> = new Map(); // roomId -> Room
   private roomCodes: Map<string, string> = new Map(); // roomCode -> roomId
   
   // Constants
@@ -39,10 +65,67 @@ export class RoomManager {
   private readonly DEFAULT_TIME_LIMIT = 15;
   private readonly ROOM_CODE_MAX_ATTEMPTS = 10;
 
+  private createBotPlayer(roomId: string, difficulty: AIDifficulty, index: number): Player {
+    const now = Date.now();
+
+    return {
+      id: `bot:${roomId}:${index}`,
+      userId: `bot_${roomId}`,
+      name: getBotName(difficulty, index),
+      age: 0,
+      profileImage: undefined,
+      authProviders: [],
+      rank: difficulty === 'hard' ? 'Silver' : difficulty === 'medium' ? 'Iron' : 'Plastic',
+      rankPoints: difficulty === 'hard' ? 1600 : difficulty === 'medium' ? 700 : 150,
+      gamesPlayed: 0,
+      gamesWon: 0,
+      gamesLost: 0,
+      gamesDrawn: 0,
+      winStreak: 0,
+      bestWinStreak: 0,
+      protectedRank: null,
+      rankProtectionMatches: 0,
+      createdAt: now,
+      lastLoginAt: now,
+      socketId: `ai:${roomId}:${index}`,
+      isBot: true,
+      isReady: true,
+      isAdmin: false,
+      isEliminated: false,
+      isConnected: true,
+      joinedAt: now,
+      stats: {
+        validWordsSubmitted: 0,
+        timeoutCount: 0,
+        longestWord: '',
+      },
+    };
+  }
+
+  private getHumanPlayers(room: StoredRoom): Player[] {
+    return room.players.filter((player) => !player.isBot);
+  }
+
+  private getBotPlayers(room: StoredRoom): Player[] {
+    return room.players.filter((player) => player.isBot);
+  }
+
+  private syncSinglePlayerBots(room: StoredRoom, botCount: number, difficulty: AIDifficulty) {
+    const humanPlayers = this.getHumanPlayers(room);
+    const normalizedBotCount = Math.max(1, Math.min(this.MAX_PLAYERS - 1, botCount));
+    const bots = Array.from({ length: normalizedBotCount }, (_, index) => this.createBotPlayer(room.id, difficulty, index));
+
+    room.aiDifficulty = difficulty;
+    room.settings.botCount = normalizedBotCount;
+    room.settings.aiDifficulty = difficulty;
+    room.settings.maxPlayers = humanPlayers.length + normalizedBotCount;
+    room.players = [...humanPlayers, ...bots];
+  }
+
   /**
    * Create a new room
    */
-  createRoom(roomName: string, playerProfile: PlayerProfile, socketId: string): Room {
+  createRoom(roomInput: CreateRoomRequest, playerProfile: PlayerProfile, socketId: string): Room {
     const roomId = uuidv4();
     
     // Generate unique room code
@@ -57,10 +140,22 @@ export class RoomManager {
       throw new Error('Failed to generate unique room code');
     }
 
+    const roomName = roomInput.roomName.trim() || 'Untitled Room';
+    const requestedSinglePlayer = roomInput.gameMode === 'single_player' || roomInput.aiDifficulty !== undefined;
+    const gameMode: GameMode = requestedSinglePlayer ? 'single_player' : 'multiplayer';
+    const aiDifficulty: AIDifficulty | null = gameMode === 'single_player' ? (roomInput.aiDifficulty ?? 'easy') : null;
+    const isPrivate = Boolean(gameMode === 'multiplayer' && roomInput.isPrivate);
+    const password = roomInput.password?.trim() || '';
+
+    if (isPrivate && (password.length < 4 || password.length > 32)) {
+      throw new Error('Private room password must be between 4 and 32 characters');
+    }
+
     // Create admin player
     const adminPlayer: Player = {
       ...playerProfile,
       socketId,
+      isBot: false,
       isReady: false,
       isAdmin: true,
       isEliminated: false,
@@ -74,15 +169,21 @@ export class RoomManager {
     };
 
     // Create room
-    const room: Room = {
+    const room: StoredRoom = {
       id: roomId,
       roomCode,
-      roomName: roomName.trim() || 'Untitled Room',
+      roomName,
+      gameMode,
+      aiDifficulty,
+      isPrivate,
+      inviteToken: generateInviteToken(),
       adminPlayerId: playerProfile.id,
       players: [adminPlayer],
       settings: {
-        maxPlayers: this.MAX_PLAYERS,
-        timeLimit: this.DEFAULT_TIME_LIMIT
+        maxPlayers: gameMode === 'single_player' ? 2 : this.MAX_PLAYERS,
+        timeLimit: this.DEFAULT_TIME_LIMIT,
+        botCount: gameMode === 'single_player' ? 1 : undefined,
+        aiDifficulty: aiDifficulty ?? undefined,
       },
       status: 'waiting',
       currentTurnIndex: 0,
@@ -92,8 +193,13 @@ export class RoomManager {
       leaderboard: null,
       createdAt: Date.now(),
       gameStartedAt: null,
-      gameEndedAt: null
+      gameEndedAt: null,
+      password: isPrivate ? password : undefined,
     };
+
+    if (gameMode === 'single_player' && aiDifficulty) {
+      this.syncSinglePlayerBots(room, 1, aiDifficulty);
+    }
 
     this.rooms.set(roomId, room);
     this.roomCodes.set(roomCode, roomId);
@@ -105,8 +211,8 @@ export class RoomManager {
   /**
    * Join an existing room by room code
    */
-  joinRoom(roomCode: string, playerProfile: PlayerProfile, socketId: string): Room | null {
-    const normalizedCode = roomCode.toUpperCase().trim();
+  joinRoom(joinInput: JoinRoomRequest, playerProfile: PlayerProfile, socketId: string): Room | null {
+    const normalizedCode = joinInput.roomCode.toUpperCase().trim();
     const roomId = this.roomCodes.get(normalizedCode);
     
     if (!roomId) {
@@ -123,9 +229,21 @@ export class RoomManager {
       throw new Error('Room is full');
     }
 
+    if (room.gameMode === 'single_player') {
+      throw new Error('Single Player rooms cannot be joined by another player');
+    }
+
     // Check if game already started
     if (room.status !== 'waiting') {
       throw new Error('Game has already started');
+    }
+
+    const inviteBypass = Boolean(joinInput.inviteToken && joinInput.inviteToken === room.inviteToken);
+    if (room.isPrivate && !inviteBypass) {
+      const password = joinInput.password?.trim() || '';
+      if (password !== room.password) {
+        throw new Error('Incorrect room password');
+      }
     }
 
     // Check if player is already in room (reconnect scenario)
@@ -134,7 +252,7 @@ export class RoomManager {
       // Update socket ID and connection status
       room.players[existingPlayerIndex].socketId = socketId;
       room.players[existingPlayerIndex].isConnected = true;
-      console.log(`[RoomManager] Player ${playerProfile.name} reconnected to room ${roomCode}`);
+      console.log(`[RoomManager] Player ${playerProfile.name} reconnected to room ${normalizedCode}`);
       return room;
     }
 
@@ -142,6 +260,7 @@ export class RoomManager {
     const newPlayer: Player = {
       ...playerProfile,
       socketId,
+      isBot: false,
       isReady: false,
       isAdmin: false,
       isEliminated: false,
@@ -155,7 +274,7 @@ export class RoomManager {
     };
 
     room.players.push(newPlayer);
-    console.log(`[RoomManager] Player ${playerProfile.name} joined room ${roomCode}`);
+    console.log(`[RoomManager] Player ${playerProfile.name} joined room ${normalizedCode}`);
     
     return room;
   }
@@ -182,7 +301,7 @@ export class RoomManager {
     console.log(`[RoomManager] Player ${player.name} left room ${room.roomCode}`);
 
     // If room is empty, delete it
-    if (room.players.length === 0) {
+    if (room.players.length === 0 || this.getHumanPlayers(room).length === 0) {
       this.deleteRoom(roomId);
       console.log(`[RoomManager] Deleted empty room ${room.roomCode}`);
       return { room: null };
@@ -238,6 +357,9 @@ export class RoomManager {
     }
 
     const player = room.players[playerIndex];
+    if (player.isBot) {
+      throw new Error('AI opponents cannot be kicked');
+    }
     room.players.splice(playerIndex, 1);
     console.log(`[RoomManager] Admin ${admin.name} kicked player ${player.name} from room ${room.roomCode}`);
 
@@ -294,6 +416,10 @@ export class RoomManager {
 
     // Validate and update max players
     if (settings.maxPlayers !== undefined) {
+      if (room.gameMode === 'single_player') {
+        throw new Error('Single Player rooms always use 2 players');
+      }
+
       const newMax = settings.maxPlayers;
       
       // Must be within limits
@@ -321,7 +447,48 @@ export class RoomManager {
       room.settings.timeLimit = newTimeLimit;
     }
 
+    if (room.gameMode === 'single_player') {
+      const requestedBotCount = settings.botCount ?? room.settings.botCount ?? this.getBotPlayers(room).length ?? 1;
+      const requestedDifficulty = settings.aiDifficulty ?? room.aiDifficulty ?? 'easy';
+      this.syncSinglePlayerBots(room, requestedBotCount, requestedDifficulty);
+    }
+
     console.log(`[RoomManager] Updated settings for room ${room.roomCode}:`, room.settings);
+    return room;
+  }
+
+  updateAccess(
+    roomId: string,
+    adminId: string,
+    access: UpdateRoomAccessRequest
+  ): Room {
+    const room = this.rooms.get(roomId);
+    if (!room) {
+      throw new Error('Room not found');
+    }
+
+    const admin = room.players.find(p => p.id === adminId);
+    if (!admin || !admin.isAdmin) {
+      throw new Error('Only admin can change room access');
+    }
+
+    if (room.status !== 'waiting') {
+      throw new Error('Cannot change room access during game');
+    }
+
+    if (access.isPrivate) {
+      const password = access.password?.trim() || '';
+      if (password.length < 4 || password.length > 32) {
+        throw new Error('Private room password must be between 4 and 32 characters');
+      }
+      room.isPrivate = true;
+      room.password = password;
+    } else {
+      room.isPrivate = false;
+      room.password = undefined;
+    }
+
+    console.log(`[RoomManager] Updated access for room ${room.roomCode}: ${room.isPrivate ? 'private' : 'public'}`);
     return room;
   }
 
@@ -388,6 +555,18 @@ export class RoomManager {
     return undefined;
   }
 
+  getRoomByInviteToken(inviteToken: string): Room | undefined {
+    const normalizedInviteToken = inviteToken.trim();
+
+    for (const room of this.rooms.values()) {
+      if (room.inviteToken === normalizedInviteToken) {
+        return room;
+      }
+    }
+
+    return undefined;
+  }
+
   /**
    * Get all available rooms (for lobby)
    */
@@ -397,11 +576,18 @@ export class RoomManager {
     for (const room of this.rooms.values()) {
       // Only show waiting rooms that aren't full
       if (room.status === 'waiting' && room.players.length < room.settings.maxPlayers) {
+        if (room.gameMode === 'single_player') {
+          continue;
+        }
+
         const admin = room.players.find(p => p.isAdmin);
         rooms.push({
           id: room.id,
           roomCode: room.roomCode,
           roomName: room.roomName,
+          gameMode: room.gameMode,
+          aiDifficulty: room.aiDifficulty,
+          isPrivate: room.isPrivate,
           currentPlayers: room.players.length,
           maxPlayers: room.settings.maxPlayers,
           timeLimit: room.settings.timeLimit,
@@ -467,7 +653,7 @@ export class RoomManager {
     room.gameEndedAt = null;
 
     room.players.forEach((player) => {
-      player.isReady = false;
+      player.isReady = player.isBot;
       player.isEliminated = false;
       player.stats = {
         validWordsSubmitted: 0,
@@ -495,6 +681,12 @@ export class RoomManager {
 
     player.isConnected = false;
     console.log(`[RoomManager] Player ${player.name} disconnected from room ${room.roomCode}`);
+
+    if (this.getHumanPlayers(room).every((candidate) => !candidate.isConnected)) {
+      this.deleteRoom(roomId);
+      console.log(`[RoomManager] Deleted room ${room.roomCode} because all human players disconnected`);
+      return { room: null };
+    }
 
     // If admin disconnected, transfer admin
     let newAdminId: string | undefined;

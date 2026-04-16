@@ -8,13 +8,16 @@
 
 import { SocketProvider } from '@/contexts/SocketContext';
 import { DialogProvider } from '@/contexts/DialogContext';
+import { SessionProvider } from 'next-auth/react';
 
 export function Providers({ children }: { children: React.ReactNode }) {
   return (
-    <DialogProvider>
-      <SocketProvider>
-        {children}
-      </SocketProvider>
-    </DialogProvider>
+    <SessionProvider>
+      <DialogProvider>
+        <SocketProvider>
+          {children}
+        </SocketProvider>
+      </DialogProvider>
+    </SessionProvider>
   );
 }

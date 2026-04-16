@@ -9,13 +9,20 @@
 import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
 import { io, Socket } from 'socket.io-client';
 import type { 
+  AbilityEffectPayload,
+  MatchReactionPayload,
+  QuickMessagePayload,
+  RematchStatusPayload,
+  PlayerAbilityState,
+  CreateRoomRequest,
   ClientToServerEvents, 
+  JoinRoomRequest,
   ServerToClientEvents,
   Room,
   GameState,
   MatchResult 
 } from '@shared/types';
-import { getPlayerProfile, updatePlayerStats } from '@/utils/localStorage';
+import { applyMatchResultToProfile, getPlayerProfile } from '@/utils/localStorage';
 import { useDialog } from '@/contexts/DialogContext';
 
 type AppSocket = Socket<ServerToClientEvents, ClientToServerEvents>;
@@ -23,6 +30,7 @@ type RoomResponseCallback = (response: { success: boolean; room?: Room; error?: 
 type SuccessCallback = (response: { success: boolean }) => void;
 type ErrorCallback = (response: { success: boolean; error?: string }) => void;
 type ReadyCallback = (response: { success: boolean; isReady: boolean }) => void;
+type AbilityCallback = (response: { success: boolean; error?: string; hints?: string[] }) => void;
 
 interface SocketContextType {
   socket: AppSocket | null;
@@ -30,17 +38,27 @@ interface SocketContextType {
   currentRoom: Room | null;
   gameState: GameState | null;
   leaderboard: MatchResult | null;
+  abilityState: PlayerAbilityState | null;
+  latestAbilityEffect: AbilityEffectPayload | null;
+  latestReaction: MatchReactionPayload | null;
+  latestQuickMessage: QuickMessagePayload | null;
+  rematchStatus: RematchStatusPayload | null;
   error: string | null;
   connect: () => void;
   disconnect: () => void;
-  createRoom: (roomName: string, callback?: RoomResponseCallback) => void;
-  joinRoom: (roomCode: string, callback?: RoomResponseCallback) => void;
+  createRoom: (room: CreateRoomRequest, callback?: RoomResponseCallback) => void;
+  joinRoom: (join: JoinRoomRequest, callback?: RoomResponseCallback) => void;
   leaveRoom: (callback?: SuccessCallback) => void;
   kickPlayer: (playerId: string, callback?: ErrorCallback) => void;
   updateSettings: (settings: { maxPlayers?: number; timeLimit?: number }, callback?: ErrorCallback) => void;
+  updateRoomAccess: (access: { isPrivate: boolean; password?: string }, callback?: ErrorCallback) => void;
   toggleReady: (callback?: ReadyCallback) => void;
   startGame: (callback?: ErrorCallback) => void;
   submitWord: (word: string, callback?: ErrorCallback) => void;
+  useAbility: (data: { ability: AbilityEffectPayload['ability']; targetPlayerId?: string }, callback?: AbilityCallback) => void;
+  sendReaction: (emoji: string, callback?: ErrorCallback) => void;
+  sendQuickMessage: (message: string, callback?: ErrorCallback) => void;
+  requestRematch: (callback?: RoomResponseCallback) => void;
 }
 
 const SocketContext = createContext<SocketContextType | undefined>(undefined);
@@ -54,6 +72,11 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
   const [currentRoom, setCurrentRoom] = useState<Room | null>(null);
   const [gameState, setGameState] = useState<GameState | null>(null);
   const [leaderboard, setLeaderboard] = useState<MatchResult | null>(null);
+  const [abilityState, setAbilityState] = useState<PlayerAbilityState | null>(null);
+  const [latestAbilityEffect, setLatestAbilityEffect] = useState<AbilityEffectPayload | null>(null);
+  const [latestReaction, setLatestReaction] = useState<MatchReactionPayload | null>(null);
+  const [latestQuickMessage, setLatestQuickMessage] = useState<QuickMessagePayload | null>(null);
+  const [rematchStatus, setRematchStatus] = useState<RematchStatusPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   
   const socketRef = useRef<AppSocket | null>(null);
@@ -134,21 +157,17 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
       console.log('[Socket] Game started');
       setGameState(gameState);
       setLeaderboard(null);
+      setLatestAbilityEffect(null);
+      setLatestReaction(null);
+      setLatestQuickMessage(null);
+      setRematchStatus(null);
     });
 
     newSocket.on('game_ended', (result) => {
       console.log('[Socket] Game ended');
       setLeaderboard(result);
       setGameState(null);
-
-      // Update player stats based on game result
-      if (result.winnerId) {
-        const playerProfile = getPlayerProfile();
-        if (playerProfile) {
-          const won = result.winnerId === playerProfile.id;
-          updatePlayerStats(won);
-        }
-      }
+      applyMatchResultToProfile(result);
     });
 
     newSocket.on('turn_changed', (data) => {
@@ -158,6 +177,7 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
         currentPlayerId: data.currentPlayerId,
         currentPlayerName: data.currentPlayerName,
         requiredLetter: data.requiredLetter,
+        chainDirection: data.chainDirection,
       } : null);
     });
 
@@ -198,6 +218,36 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
       console.log('[Socket] Timer expired for:', data.playerName);
     });
 
+    newSocket.on('ability_state', (state) => {
+      setAbilityState(state);
+    });
+
+    newSocket.on('ability_effect', (effect) => {
+      setLatestAbilityEffect(effect);
+    });
+
+    newSocket.on('reaction_received', (payload) => {
+      setLatestReaction(payload);
+    });
+
+    newSocket.on('quick_message_received', (payload) => {
+      setLatestQuickMessage(payload);
+    });
+
+    newSocket.on('rematch_status', (payload) => {
+      setRematchStatus(payload);
+    });
+
+    newSocket.on('rematch_started', (data) => {
+      setCurrentRoom(data.room);
+      setGameState(null);
+      setLeaderboard(null);
+      setLatestAbilityEffect(null);
+      setLatestReaction(null);
+      setLatestQuickMessage(null);
+      setRematchStatus(null);
+    });
+
     newSocket.on('error', (err) => {
       console.error('[Socket] Error:', err);
       setError(err.message);
@@ -224,11 +274,16 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
   }, [connect, disconnect]);
 
   // Socket action wrappers
-  const createRoom = useCallback((roomName: string, callback?: RoomResponseCallback) => {
+  const createRoom = useCallback((room: CreateRoomRequest, callback?: RoomResponseCallback) => {
     if (!socketRef.current) return;
     
-    const profile = JSON.parse(localStorage.getItem('last_letter_player_profile') || '{}');
-    socketRef.current.emit('create_room', { roomName, player: profile }, (response) => {
+    const profile = getPlayerProfile();
+    if (!profile) {
+      callback?.({ success: false, error: 'Player information is required' });
+      return;
+    }
+
+    socketRef.current.emit('create_room', { room, player: profile }, (response) => {
       if (response.success && response.room) {
         setCurrentRoom(response.room);
       }
@@ -236,11 +291,22 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
     });
   }, []);
 
-  const joinRoom = useCallback((roomCode: string, callback?: RoomResponseCallback) => {
+  const joinRoom = useCallback((join: JoinRoomRequest, callback?: RoomResponseCallback) => {
     if (!socketRef.current) return;
     
-    const profile = JSON.parse(localStorage.getItem('last_letter_player_profile') || '{}');
-    socketRef.current.emit('join_room', { roomCode: roomCode.toUpperCase(), player: profile }, (response) => {
+    const profile = getPlayerProfile();
+    if (!profile) {
+      callback?.({ success: false, error: 'Player information is required' });
+      return;
+    }
+
+    socketRef.current.emit('join_room', {
+      join: {
+        ...join,
+        roomCode: join.roomCode.toUpperCase(),
+      },
+      player: profile,
+    }, (response) => {
       if (response.success && response.room) {
         setCurrentRoom(response.room);
       }
@@ -253,6 +319,11 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
       setCurrentRoom(null);
       setGameState(null);
       setLeaderboard(null);
+      setAbilityState(null);
+      setLatestAbilityEffect(null);
+      setLatestReaction(null);
+      setLatestQuickMessage(null);
+      setRematchStatus(null);
       callback?.({ success: true });
       return;
     }
@@ -261,6 +332,11 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
       setCurrentRoom(null);
       setGameState(null);
       setLeaderboard(null);
+      setAbilityState(null);
+      setLatestAbilityEffect(null);
+      setLatestReaction(null);
+      setLatestQuickMessage(null);
+      setRematchStatus(null);
       callback?.({ success: false });
       return;
     }
@@ -269,6 +345,11 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
       setCurrentRoom(null);
       setGameState(null);
       setLeaderboard(null);
+      setAbilityState(null);
+      setLatestAbilityEffect(null);
+      setLatestReaction(null);
+      setLatestQuickMessage(null);
+      setRematchStatus(null);
       callback?.(response);
     });
   }, [currentRoom]);
@@ -283,6 +364,12 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
     if (!socketRef.current || !currentRoom) return;
     
     socketRef.current.emit('update_room_settings', { roomId: currentRoom.id, settings }, callback);
+  }, [currentRoom]);
+
+  const updateRoomAccess = useCallback((access: { isPrivate: boolean; password?: string }, callback?: ErrorCallback) => {
+    if (!socketRef.current || !currentRoom) return;
+
+    socketRef.current.emit('update_room_access', { roomId: currentRoom.id, access }, callback);
   }, [currentRoom]);
 
   const toggleReady = useCallback((callback?: ReadyCallback) => {
@@ -303,12 +390,60 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
     socketRef.current.emit('submit_word', { roomId: currentRoom.id, word }, callback);
   }, [currentRoom]);
 
+  const useAbility = useCallback((data: { ability: AbilityEffectPayload['ability']; targetPlayerId?: string }, callback?: AbilityCallback) => {
+    if (!socketRef.current || !currentRoom) return;
+
+    socketRef.current.emit('use_ability', {
+      roomId: currentRoom.id,
+      ability: data.ability,
+      targetPlayerId: data.targetPlayerId,
+    }, callback);
+  }, [currentRoom]);
+
+  const sendReaction = useCallback((emoji: string, callback?: ErrorCallback) => {
+    if (!socketRef.current || !currentRoom) return;
+
+    socketRef.current.emit('send_reaction', {
+      roomId: currentRoom.id,
+      emoji,
+    }, callback);
+  }, [currentRoom]);
+
+  const sendQuickMessage = useCallback((message: string, callback?: ErrorCallback) => {
+    if (!socketRef.current || !currentRoom) return;
+
+    socketRef.current.emit('send_quick_message', {
+      roomId: currentRoom.id,
+      message,
+    }, callback);
+  }, [currentRoom]);
+
+  const requestRematch = useCallback((callback?: RoomResponseCallback) => {
+    if (!socketRef.current || !currentRoom) return;
+
+    socketRef.current.emit('request_rematch', { roomId: currentRoom.id }, (response) => {
+      if (response.success && response.room) {
+        const nextRoom = response.room;
+        setCurrentRoom(response.room);
+        setGameState(null);
+        setLeaderboard(null);
+        setRematchStatus((previous) => previous ? { ...previous, roomId: nextRoom.id } : previous);
+      }
+      callback?.(response);
+    });
+  }, [currentRoom]);
+
   const value: SocketContextType = {
     socket,
     isConnected,
     currentRoom,
     gameState,
     leaderboard,
+    abilityState,
+    latestAbilityEffect,
+    latestReaction,
+    latestQuickMessage,
+    rematchStatus,
     error,
     connect,
     disconnect,
@@ -317,9 +452,14 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
     leaveRoom,
     kickPlayer,
     updateSettings,
+    updateRoomAccess,
     toggleReady,
     startGame,
     submitWord,
+    useAbility,
+    sendReaction,
+    sendQuickMessage,
+    requestRematch,
   };
 
   return (

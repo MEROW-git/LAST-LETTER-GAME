@@ -15,7 +15,35 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { getPlayerProfile, clearPlayerProfile } from '@/utils/localStorage';
+import { signOut } from 'next-auth/react';
 import type { PlayerProfile } from '@shared/types';
+
+function getRankDisplay(rank: PlayerProfile['rank'], rankPoints: number) {
+  if (rank === 'Master') return 'Master 👑';
+  if (rank === 'Plastic') return 'Plastic 🟫';
+
+  if (rank === 'Iron') {
+    if (rankPoints >= 1167) return 'Iron I ⚙️';
+    if (rankPoints >= 834) return 'Iron II ⚙️';
+    return 'Iron III ⚙️';
+  }
+
+  if (rank === 'Silver') {
+    if (rankPoints >= 2500) return 'Silver I 🥈';
+    if (rankPoints >= 2000) return 'Silver II 🥈';
+    return 'Silver III 🥈';
+  }
+
+  if (rank === 'Gold') {
+    if (rankPoints >= 4334) return 'Gold I 🥇';
+    if (rankPoints >= 3667) return 'Gold II 🥇';
+    return 'Gold III 🥇';
+  }
+
+  if (rankPoints >= 6334) return 'Diamond I 💎';
+  if (rankPoints >= 5667) return 'Diamond II 💎';
+  return 'Diamond III 💎';
+}
 
 export default function MainMenu() {
   const router = useRouter();
@@ -32,10 +60,12 @@ export default function MainMenu() {
     setProfile(playerProfile);
   }, [router]);
 
-  const handleExit = () => {
+  const handleExit = async () => {
     if (confirm('Are you sure you want to log out?')) {
       clearPlayerProfile();
+      await signOut({ redirect: false });
       router.push('/setup');
+      router.refresh();
     }
   };
 
@@ -76,13 +106,14 @@ export default function MainMenu() {
             <div className="flex items-center justify-between mb-2">
               <span className="text-sm text-slate-400">Rank:</span>
               <span className={`font-bold ${
+                profile.rank === 'Master' ? 'text-amber-200' :
                 profile.rank === 'Diamond' ? 'text-cyan-400' :
                 profile.rank === 'Gold' ? 'text-yellow-400' :
                 profile.rank === 'Silver' ? 'text-slate-300' :
                 profile.rank === 'Iron' ? 'text-orange-400' :
                 'text-slate-500'
               }`}>
-                {profile.rank}
+                {getRankDisplay(profile.rank, profile.rankPoints)}
               </span>
             </div>
             <div className="flex items-center justify-between mb-2">
@@ -124,14 +155,15 @@ export default function MainMenu() {
           </button>
 
           <button
-            onClick={() => router.push('/setup')}
+            onClick={() => router.push('/settings')}
             className="w-full btn btn-secondary text-lg py-4"
           >
             <span className="flex items-center justify-center gap-2">
               <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317a1 1 0 011.35-.936l1.845.79a1 1 0 00.913-.05l1.75-1.026a1 1 0 011.419.615l.435 1.955a1 1 0 00.664.736l1.891.654a1 1 0 01.43 1.704l-1.296 1.53a1 1 0 00-.23.885l.379 1.97a1 1 0 01-1.164 1.168l-1.971-.371a1 1 0 00-.885.234l-1.525 1.301a1 1 0 01-1.705-.425l-.66-1.89a1 1 0 00-.738-.662l-1.956-.43a1 1 0 01-.618-1.418l1.022-1.752a1 1 0 00.046-.914l-.794-1.844z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
               </svg>
-              Switch Account
+              Settings
             </span>
           </button>
 
