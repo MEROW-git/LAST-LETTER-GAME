@@ -16,7 +16,7 @@ import { useRouter, useParams } from 'next/navigation';
 import { getPlayerProfile } from '@/utils/localStorage';
 import { useSocket } from '@/contexts/SocketContext';
 import { useDialog } from '@/contexts/DialogContext';
-import type { Player, RoomSettings } from '@shared/types';
+import type { AIDifficulty, Player, RoomSettings } from '@shared/types';
 
 export default function RoomPage() {
   const router = useRouter();
@@ -29,6 +29,7 @@ export default function RoomPage() {
     leaveRoom, 
     kickPlayer, 
     updateSettings, 
+    updateRoomAccess,
     toggleReady, 
     startGame 
   } = useSocket();
@@ -37,7 +38,10 @@ export default function RoomPage() {
   const [profile, setProfile] = useState(getPlayerProfile());
   const [showSettings, setShowSettings] = useState(false);
   const [settings, setSettings] = useState<RoomSettings>({ maxPlayers: 15, timeLimit: 15 });
+  const [roomAccess, setRoomAccess] = useState({ isPrivate: false, password: '' });
   const [error, setError] = useState<string | null>(null);
+  const [inviteMessage, setInviteMessage] = useState<string | null>(null);
+  const [autoStartingSolo, setAutoStartingSolo] = useState(false);
 
   // Check profile
   useEffect(() => {
@@ -61,6 +65,10 @@ export default function RoomPage() {
   useEffect(() => {
     if (currentRoom) {
       setSettings(currentRoom.settings);
+      setRoomAccess((previous) => ({
+        isPrivate: currentRoom.isPrivate,
+        password: previous.isPrivate !== currentRoom.isPrivate ? '' : previous.password,
+      }));
     }
   }, [currentRoom]);
 
@@ -70,6 +78,30 @@ export default function RoomPage() {
       router.push(`/game/${roomId}`);
     }
   }, [currentRoom?.status, roomId, router]);
+
+  useEffect(() => {
+    if (!currentRoom || currentRoom.id !== roomId) {
+      return;
+    }
+
+    if (currentRoom.gameMode !== 'single_player' || currentRoom.status !== 'waiting' || autoStartingSolo) {
+      return;
+    }
+
+    const humanPlayer = currentRoom.players.find((player) => !player.isBot);
+    const hasBot = currentRoom.players.some((player) => player.isBot);
+    if (!hasBot || humanPlayer?.id !== profile?.id) {
+      return;
+    }
+
+    setAutoStartingSolo(true);
+    startGame((response) => {
+      setAutoStartingSolo(false);
+      if (response?.error) {
+        setError(response.error);
+      }
+    });
+  }, [autoStartingSolo, currentRoom, profile?.id, roomId, startGame]);
 
   const handleLeaveRoom = () => {
     leaveRoom(() => {
@@ -99,6 +131,24 @@ export default function RoomPage() {
     });
   };
 
+  const handleUpdateRoomAccess = () => {
+    if (roomAccess.isPrivate && (roomAccess.password.trim().length < 4 || roomAccess.password.trim().length > 32)) {
+      setError('Private room password must be between 4 and 32 characters');
+      return;
+    }
+
+    updateRoomAccess({
+      isPrivate: roomAccess.isPrivate,
+      password: roomAccess.isPrivate ? roomAccess.password.trim() : undefined,
+    }, (response) => {
+      if (response?.success) {
+        setShowSettings(false);
+      } else if (response?.error) {
+        setError(response.error);
+      }
+    });
+  };
+
   const handleStartGame = () => {
     startGame((response) => {
       if (response?.error) {
@@ -109,6 +159,36 @@ export default function RoomPage() {
 
   const handleToggleReady = () => {
     toggleReady();
+  };
+
+  const handleCopyInvite = async () => {
+    if (typeof window === 'undefined' || !currentRoom) {
+      return;
+    }
+
+    const inviteUrl = `${window.location.origin}/lobby?room=${encodeURIComponent(currentRoom.roomCode)}&invite=${encodeURIComponent(currentRoom.inviteToken)}`;
+
+    try {
+      await navigator.clipboard.writeText(inviteUrl);
+      setInviteMessage('Invite link copied.');
+      setTimeout(() => setInviteMessage(null), 3000);
+    } catch (copyError) {
+      setError('Failed to copy invite link');
+    }
+  };
+
+  const handleCopyRoomCode = async () => {
+    if (typeof window === 'undefined' || !currentRoom) {
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(currentRoom.roomCode);
+      setInviteMessage(`Room code ${currentRoom.roomCode} copied.`);
+      setTimeout(() => setInviteMessage(null), 3000);
+    } catch (copyError) {
+      setError('Failed to copy room code');
+    }
   };
 
   if (!profile || !currentRoom) {
@@ -123,6 +203,8 @@ export default function RoomPage() {
   const currentPlayer = currentRoom.players.find(p => p.id === profile.id);
   const allPlayersReady = currentRoom.players.every(p => p.isReady || p.isAdmin);
   const canStart = isAdmin && allPlayersReady && currentRoom.players.length >= 2;
+  const isSinglePlayer = currentRoom.gameMode === 'single_player';
+  const botCount = currentRoom.players.filter((player) => player.isBot).length;
 
   return (
     <div className="min-h-screen p-4">
@@ -150,6 +232,11 @@ export default function RoomPage() {
               <p className="text-3xl font-mono font-bold text-primary-400 tracking-widest">
                 {currentRoom.roomCode}
               </p>
+              <p className="text-sm text-slate-400 mt-1">
+                {isSinglePlayer
+                  ? `Single Player • ${currentRoom.aiDifficulty?.[0].toUpperCase()}${currentRoom.aiDifficulty?.slice(1) ?? ''} • ${botCount} bot${botCount === 1 ? '' : 's'}`
+                  : currentRoom.isPrivate ? 'Private room' : 'Public room'}
+              </p>
             </div>
             <div className="flex gap-6">
               <div className="text-center">
@@ -165,6 +252,39 @@ export default function RoomPage() {
                 </p>
               </div>
             </div>
+          </div>
+          <div className="mt-4 flex flex-wrap items-center gap-3">
+            {!isSinglePlayer ? (
+              <>
+                <button
+                  onClick={() => void handleCopyRoomCode()}
+                  className="btn btn-primary px-4 py-2"
+                >
+                  Copy Room Code
+                </button>
+                <button
+                  onClick={() => void handleCopyInvite()}
+                  className="btn btn-secondary px-4 py-2"
+                >
+                  Copy Invite Link
+                </button>
+                <p className="text-sm text-slate-400">
+                  Invite by code: tell friends to join with <span className="font-mono text-primary-300">{currentRoom.roomCode}</span>
+                </p>
+                {currentRoom.isPrivate && (
+                  <p className="text-sm text-slate-400">
+                    Manual joins need the room password. Invite link skips it.
+                  </p>
+                )}
+              </>
+            ) : (
+              <p className="text-sm text-slate-300">
+                Solo match ready. Difficulty is <span className="font-semibold capitalize text-warning-300">{currentRoom.aiDifficulty}</span> with <span className="font-semibold text-primary-300">{botCount}</span> bot{botCount === 1 ? '' : 's'}.
+              </p>
+            )}
+            {inviteMessage && (
+              <p className="text-sm text-success-400">{inviteMessage}</p>
+            )}
           </div>
         </div>
 
@@ -193,14 +313,14 @@ export default function RoomPage() {
             </button>
             <button
               onClick={handleStartGame}
-              disabled={!canStart}
+              disabled={!canStart || autoStartingSolo}
               className="btn btn-success flex-1 flex items-center justify-center gap-2"
             >
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
-              Start Game
+              {autoStartingSolo ? 'Starting Solo Match...' : isSinglePlayer ? 'Start Solo Match' : 'Start Game'}
             </button>
           </div>
         )}
@@ -244,7 +364,7 @@ export default function RoomPage() {
           </p>
         )}
 
-        {isAdmin && !allPlayersReady && (
+        {isAdmin && !allPlayersReady && !isSinglePlayer && (
           <p className="text-center text-slate-400 mt-4">
             Waiting for all players to be ready...
           </p>
@@ -268,23 +388,82 @@ export default function RoomPage() {
             </div>
 
             <div className="space-y-6">
-              <div>
-                <label className="block text-sm font-medium text-slate-300 mb-2">
-                  Max Players: {settings.maxPlayers}
-                </label>
-                <input
-                  type="range"
-                  min={2}
-                  max={15}
-                  value={settings.maxPlayers}
-                  onChange={(e) => setSettings(s => ({ ...s, maxPlayers: parseInt(e.target.value) }))}
-                  className="w-full"
-                />
-                <div className="flex justify-between text-xs text-slate-500 mt-1">
-                  <span>2</span>
-                  <span>15</span>
+              {isSinglePlayer ? (
+                <>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-300 mb-2">
+                      Bot Opponents: {settings.botCount ?? 1}
+                    </label>
+                    <input
+                      type="range"
+                      min={1}
+                      max={6}
+                      value={settings.botCount ?? 1}
+                      onChange={(e) => setSettings((current) => ({
+                        ...current,
+                        botCount: parseInt(e.target.value),
+                        maxPlayers: parseInt(e.target.value) + 1,
+                      }))}
+                      className="w-full"
+                    />
+                    <div className="flex justify-between text-xs text-slate-500 mt-1">
+                      <span>1 bot</span>
+                      <span>6 bots</span>
+                    </div>
+                    <p className="mt-2 text-xs text-slate-500">Add more AI players to make the match busier without changing multiplayer mode.</p>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-slate-300 mb-3">
+                      AI Difficulty
+                    </label>
+                    <div className="grid gap-3 sm:grid-cols-3">
+                      {(['easy', 'medium', 'hard'] as const).map((difficulty) => {
+                        const isSelected = (settings.aiDifficulty ?? currentRoom.aiDifficulty ?? 'easy') === difficulty;
+                        return (
+                          <button
+                            key={difficulty}
+                            type="button"
+                            onClick={() => setSettings((current) => ({ ...current, aiDifficulty: difficulty as AIDifficulty }))}
+                            className={`rounded-2xl border px-4 py-3 text-left transition-all ${
+                              isSelected
+                                ? 'border-warning-400 bg-warning-500/10 shadow-[0_0_18px_rgba(251,146,60,0.12)]'
+                                : 'border-slate-700 bg-slate-800/40 hover:border-warning-500/60'
+                            }`}
+                          >
+                            <p className="font-semibold capitalize text-white">{difficulty}</p>
+                            <p className="mt-1 text-xs text-slate-400">
+                              {difficulty === 'easy'
+                                ? 'Slower and more forgiving.'
+                                : difficulty === 'medium'
+                                  ? 'Balanced speed and words.'
+                                  : 'Faster, sharper AI.'}
+                            </p>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <div>
+                  <label className="block text-sm font-medium text-slate-300 mb-2">
+                    Max Players: {settings.maxPlayers}
+                  </label>
+                  <input
+                    type="range"
+                    min={2}
+                    max={15}
+                    value={settings.maxPlayers}
+                    onChange={(e) => setSettings(s => ({ ...s, maxPlayers: parseInt(e.target.value) }))}
+                    className="w-full"
+                  />
+                  <div className="flex justify-between text-xs text-slate-500 mt-1">
+                    <span>2</span>
+                    <span>15</span>
+                  </div>
                 </div>
-              </div>
+              )}
 
               <div>
                 <label className="block text-sm font-medium text-slate-300 mb-2">
@@ -305,12 +484,57 @@ export default function RoomPage() {
                 </div>
               </div>
 
-              <button
-                onClick={handleUpdateSettings}
-                className="w-full btn btn-primary"
-              >
-                Save Settings
-              </button>
+              {!isSinglePlayer && (
+                <div className="border-t border-slate-700 pt-6 space-y-4">
+                  <label className="flex items-center gap-3 rounded-xl border border-slate-700 bg-slate-800/40 px-4 py-3">
+                    <input
+                      type="checkbox"
+                      checked={roomAccess.isPrivate}
+                      onChange={(e) => setRoomAccess((current) => ({ ...current, isPrivate: e.target.checked }))}
+                      className="h-4 w-4 accent-sky-500"
+                    />
+                    <div>
+                      <p className="font-medium text-white">Private room</p>
+                      <p className="text-sm text-slate-400">Show a lock in the room list and require a password unless someone uses the invite link.</p>
+                    </div>
+                  </label>
+
+                  {roomAccess.isPrivate && (
+                    <div>
+                      <label className="block text-sm font-medium text-slate-300 mb-2">
+                        New Room Password
+                      </label>
+                      <input
+                        type="password"
+                        value={roomAccess.password}
+                        onChange={(e) => setRoomAccess((current) => ({ ...current, password: e.target.value }))}
+                        placeholder="Enter new password"
+                        className="input"
+                      />
+                      <p className="text-xs text-slate-500 mt-2">
+                        Save a new password anytime for this room.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div className={`grid gap-3 ${isSinglePlayer ? '' : 'sm:grid-cols-2'}`}>
+                <button
+                  onClick={handleUpdateSettings}
+                  className="w-full btn btn-secondary"
+                >
+                  {isSinglePlayer ? 'Save Solo Settings' : 'Save Game Settings'}
+                </button>
+                {!isSinglePlayer && (
+                  <button
+                    onClick={handleUpdateRoomAccess}
+                    className="w-full btn btn-primary"
+                  >
+                    Save Room Access
+                  </button>
+                )}
+              </div>
             </div>
           </div>
         </div>
@@ -353,6 +577,11 @@ function PlayerCard({
               Admin
             </span>
           )}
+          {player.isBot && (
+            <span className="px-2 py-0.5 bg-accent-600 text-white text-xs rounded-full">
+              AI
+            </span>
+          )}
           {isCurrentUser && (
             <span className="px-2 py-0.5 bg-primary-600 text-white text-xs rounded-full">
               You
@@ -377,7 +606,7 @@ function PlayerCard({
       </div>
 
       {/* Kick Button (admin only, not for self) */}
-      {isAdmin && !player.isAdmin && (
+      {isAdmin && !player.isAdmin && !player.isBot && (
         <button
           onClick={onKick}
           className="text-danger-400 hover:text-danger-300 p-2"

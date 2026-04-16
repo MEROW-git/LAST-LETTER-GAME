@@ -14,7 +14,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { getPlayerProfile } from '@/utils/localStorage';
 import { useSocket } from '@/contexts/SocketContext';
-import type { RoomSummary } from '@shared/types';
+import type { AIDifficulty, GameMode, RoomSummary } from '@shared/types';
 
 const LOBBY_NOTICE_STORAGE_KEY = 'last_letter_lobby_notice';
 
@@ -24,7 +24,12 @@ export default function LobbyPage() {
   
   const [activeTab, setActiveTab] = useState<'join' | 'create' | 'list'>('list');
   const [roomCode, setRoomCode] = useState('');
+  const [roomPassword, setRoomPassword] = useState('');
   const [roomName, setRoomName] = useState('');
+  const [gameMode, setGameMode] = useState<GameMode>('multiplayer');
+  const [aiDifficulty, setAiDifficulty] = useState<AIDifficulty>('easy');
+  const [isPrivateRoom, setIsPrivateRoom] = useState(false);
+  const [createRoomPassword, setCreateRoomPassword] = useState('');
   const [availableRooms, setAvailableRooms] = useState<RoomSummary[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -52,6 +57,34 @@ export default function LobbyPage() {
     return () => clearInterval(interval);
   }, [router]);
 
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    const params = new URLSearchParams(window.location.search);
+    const inviteToken = params.get('invite');
+    const inviteRoomCode = params.get('room');
+
+    if (!inviteToken || !inviteRoomCode || !isConnected) {
+      return;
+    }
+
+    setIsLoading(true);
+    setError(null);
+    setActiveTab('join');
+
+    joinRoom({ roomCode: inviteRoomCode, inviteToken }, (response) => {
+      setIsLoading(false);
+
+      if (response.success && response.room) {
+        router.replace(`/room/${response.room.id}`);
+      } else {
+        setError(response.error || 'Failed to join from invite');
+      }
+    });
+  }, [isConnected, joinRoom, router]);
+
   const fetchRooms = useCallback(async () => {
     try {
       const response = await fetch('/api/rooms');
@@ -73,9 +106,20 @@ export default function LobbyPage() {
       return;
     }
 
+    if (gameMode === 'multiplayer' && isPrivateRoom && (createRoomPassword.trim().length < 4 || createRoomPassword.trim().length > 32)) {
+      setError('Private room password must be between 4 and 32 characters');
+      return;
+    }
+
     setIsLoading(true);
     
-    createRoom(roomName.trim(), (response) => {
+    createRoom({
+      roomName: roomName.trim(),
+      gameMode,
+      aiDifficulty: gameMode === 'single_player' ? aiDifficulty : undefined,
+      isPrivate: gameMode === 'multiplayer' ? isPrivateRoom : false,
+      password: gameMode === 'multiplayer' && isPrivateRoom ? createRoomPassword.trim() : undefined,
+    }, (response) => {
       setIsLoading(false);
       
       if (response.success && response.room) {
@@ -97,7 +141,10 @@ export default function LobbyPage() {
 
     setIsLoading(true);
     
-    joinRoom(roomCode.trim().toUpperCase(), (response) => {
+    joinRoom({
+      roomCode: roomCode.trim().toUpperCase(),
+      password: roomPassword.trim() || undefined,
+    }, (response) => {
       setIsLoading(false);
       
       if (response.success && response.room) {
@@ -112,7 +159,7 @@ export default function LobbyPage() {
     setError(null);
     setIsLoading(true);
     
-    joinRoom(code, (response) => {
+    joinRoom({ roomCode: code }, (response) => {
       setIsLoading(false);
       
       if (response.success && response.room) {
@@ -184,7 +231,7 @@ export default function LobbyPage() {
           {activeTab === 'list' && (
             <div>
               <div className="flex justify-between items-center mb-4">
-                <h2 className="text-xl font-semibold text-white">Available Rooms</h2>
+                <h2 className="text-xl font-semibold text-white">Room List</h2>
                 <button
                   onClick={fetchRooms}
                   className="text-primary-400 hover:text-primary-300 text-sm flex items-center gap-1"
@@ -210,8 +257,11 @@ export default function LobbyPage() {
                       className="bg-slate-800 rounded-xl p-4 flex items-center justify-between hover:bg-slate-750 transition-colors"
                     >
                       <div>
-                        <h3 className="font-semibold text-white">{room.roomName}</h3>
+                        <h3 className="font-semibold text-white">
+                          {room.isPrivate ? '🔒 ' : ''}{room.roomName}
+                        </h3>
                         <div className="flex items-center gap-4 text-sm text-slate-400 mt-1">
+                          <span>{room.isPrivate ? 'Private room' : 'Public room'}</span>
                           <span className="flex items-center gap-1">
                             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
@@ -233,7 +283,28 @@ export default function LobbyPage() {
                         </div>
                       </div>
                       <button
-                        onClick={() => handleJoinFromList(room.roomCode)}
+                        onClick={() => {
+                          if (room.isPrivate) {
+                            const password = window.prompt(`Enter password for ${room.roomName}`);
+                            if (password === null) {
+                              return;
+                            }
+                            setError(null);
+                            setIsLoading(true);
+                            joinRoom({ roomCode: room.roomCode, password }, (response) => {
+                              setIsLoading(false);
+
+                              if (response.success && response.room) {
+                                router.push(`/room/${response.room.id}`);
+                              } else {
+                                setError(response.error || 'Failed to join room');
+                              }
+                            });
+                            return;
+                          }
+
+                          handleJoinFromList(room.roomCode);
+                        }}
                         disabled={isLoading || room.currentPlayers >= room.maxPlayers}
                         className="btn btn-primary px-4 py-2"
                       >
@@ -263,6 +334,21 @@ export default function LobbyPage() {
                     maxLength={6}
                   />
                 </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-300 mb-2">
+                    Password
+                  </label>
+                  <input
+                    type="password"
+                    value={roomPassword}
+                    onChange={(e) => setRoomPassword(e.target.value)}
+                    placeholder="Enter password for private rooms"
+                    className="input"
+                  />
+                  <p className="text-xs text-slate-500 mt-2">
+                    Invite links skip this automatically.
+                  </p>
+                </div>
                 <button
                   type="submit"
                   disabled={isLoading || roomCode.length !== 6}
@@ -280,6 +366,61 @@ export default function LobbyPage() {
               <div className="space-y-4">
                 <div>
                   <label className="block text-sm font-medium text-slate-300 mb-2">
+                    Game Mode
+                  </label>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    {([
+                      { value: 'multiplayer', label: 'Multiplayer', description: 'Create a room friends can join.' },
+                      { value: 'single_player', label: 'Single Player', description: 'Play against an AI opponent.' },
+                    ] as const).map((modeOption) => (
+                      <button
+                        key={modeOption.value}
+                        type="button"
+                        onClick={() => setGameMode(modeOption.value)}
+                        className={`rounded-2xl border px-4 py-4 text-left transition-all ${
+                          gameMode === modeOption.value
+                            ? 'border-primary-400 bg-primary-500/12 shadow-[0_0_20px_rgba(56,189,248,0.12)]'
+                            : 'border-slate-700 bg-slate-800/50 hover:border-primary-500/60'
+                        }`}
+                      >
+                        <p className="font-semibold text-white">{modeOption.label}</p>
+                        <p className="mt-1 text-sm text-slate-400">{modeOption.description}</p>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {gameMode === 'single_player' && (
+                  <div>
+                    <label className="block text-sm font-medium text-slate-300 mb-2">
+                      AI Difficulty
+                    </label>
+                    <div className="grid gap-3 sm:grid-cols-3">
+                      {([
+                        { value: 'easy', label: 'Easy', description: 'Slower, simpler words, occasional mistakes.' },
+                        { value: 'medium', label: 'Medium', description: 'Sharper choices with quicker turns.' },
+                        { value: 'hard', label: 'Hard', description: 'Fast, stronger words, very few mistakes.' },
+                      ] as const).map((difficultyOption) => (
+                        <button
+                          key={difficultyOption.value}
+                          type="button"
+                          onClick={() => setAiDifficulty(difficultyOption.value)}
+                          className={`rounded-2xl border px-4 py-4 text-left transition-all ${
+                            aiDifficulty === difficultyOption.value
+                              ? 'border-warning-400 bg-warning-500/10 shadow-[0_0_20px_rgba(251,146,60,0.12)]'
+                              : 'border-slate-700 bg-slate-800/50 hover:border-warning-500/60'
+                          }`}
+                        >
+                          <p className="font-semibold text-white">{difficultyOption.label}</p>
+                          <p className="mt-1 text-xs text-slate-400">{difficultyOption.description}</p>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-300 mb-2">
                     Room Name
                   </label>
                   <input
@@ -291,12 +432,46 @@ export default function LobbyPage() {
                     maxLength={30}
                   />
                 </div>
+                {gameMode === 'multiplayer' ? (
+                  <>
+                    <label className="flex items-center gap-3 rounded-xl border border-slate-700 bg-slate-800/40 px-4 py-3">
+                      <input
+                        type="checkbox"
+                        checked={isPrivateRoom}
+                        onChange={(e) => setIsPrivateRoom(e.target.checked)}
+                        className="h-4 w-4 accent-sky-500"
+                      />
+                      <div>
+                        <p className="font-medium text-white">Private room</p>
+                        <p className="text-sm text-slate-400">Manual joins need a password, invite links do not.</p>
+                      </div>
+                    </label>
+                    {isPrivateRoom && (
+                      <div>
+                        <label className="block text-sm font-medium text-slate-300 mb-2">
+                          Room Password
+                        </label>
+                        <input
+                          type="password"
+                          value={createRoomPassword}
+                          onChange={(e) => setCreateRoomPassword(e.target.value)}
+                          placeholder="4 to 32 characters"
+                          className="input"
+                        />
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <div className="rounded-xl border border-slate-700 bg-slate-800/40 px-4 py-3 text-sm text-slate-300">
+                    Single Player rooms are private to you and the AI opponent.
+                  </div>
+                )}
                 <button
                   type="submit"
                   disabled={isLoading || !roomName.trim()}
                   className="w-full btn btn-success"
                 >
-                  {isLoading ? 'Creating...' : 'Create Room'}
+                  {isLoading ? 'Creating...' : gameMode === 'single_player' ? 'Create Solo Match' : 'Create Room'}
                 </button>
               </div>
             </form>
